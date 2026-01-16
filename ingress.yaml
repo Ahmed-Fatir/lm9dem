@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lm9dem-ingress
+  namespace: system-experio
+  annotations:
+    # Session affinity for both HTTP and WebSocket
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "lm9dem-server"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/"
+    nginx.ingress.kubernetes.io/session-cookie-change-on-failure: "false"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: "Lax"
+
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: lm9dem.experioservices.com
+    http:
+      paths:
+      # Regular HTTP traffic - catch-all MUST be last
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: lm9dem
+            port:
+              number: 8080

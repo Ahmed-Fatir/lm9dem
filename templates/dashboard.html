@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>lm9dem</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.0/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        :root {
+            --bs-body-bg: #f8f9fa;
+            --bs-body-color: #212529;
+            --bs-card-bg: #ffffff;
+            --bs-border-color: #dee2e6;
+        }
+        [data-bs-theme="dark"] {
+            --bs-body-bg: #212529;
+            --bs-body-color: #ffffff;
+            --bs-card-bg: #343a40;
+            --bs-border-color: #495057;
+        }
+        body {
+            background-color: var(--bs-body-bg);
+            color: var(--bs-body-color);
+            transition: background-color 0.3s, color 0.3s;
+        }
+        .card {
+            background-color: var(--bs-card-bg);
+            border-color: var(--bs-border-color);
+        }
+        .deployment-card { transition: all 0.3s; }
+        .deployment-card:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .version-badge { font-size: 0.8em; }
+        .status-indicator { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+        .status-running { background-color: #28a745; }
+        .status-stopped { background-color: #dc3545; }
+        .status-warning { background-color: #ffc107; }
+        .refresh-btn { position: fixed; bottom: 20px; right: 20px; }
+        .theme-toggle { transition: transform 0.3s; }
+        .theme-toggle:hover { transform: scale(1.1); }
+    </style>
+</head>
+<body data-bs-theme="light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-layers"></i> lm9dem
+            </a>
+            <div class="navbar-nav">
+                <a class="nav-link active" href="/">
+                    <i class="bi bi-house"></i> Dashboard
+                </a>
+                <a class="nav-link" href="/sessions">
+                    <i class="bi bi-people"></i> Sessions
+                </a>
+                <a class="nav-link" href="/logs">
+                    <i class="bi bi-file-text"></i> Logs
+                </a>
+            </div>
+            <button class="btn btn-outline-light theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                <i class="bi bi-sun-fill" id="theme-icon"></i>
+            </button>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- System Status Row -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <h4><i class="bi bi-speedometer2"></i> System Status</h4>
+            </div>
+        </div>
+        
+        <div class="row mb-4" id="system-status" hx-get="/api/system/status" hx-trigger="load, every 30s" hx-target="this" hx-swap="innerHTML">
+            <div class="col-md-4 mb-3">
+                <div class="card deployment-card border-primary">
+                    <div class="card-body">
+                        <h5 class="card-title text-primary">
+                            <span class="status-indicator status-running"></span>
+                            ALPHA (Production)
+                        </h5>
+                        <p class="card-text">
+                            <strong>Replicas:</strong> <span class="badge bg-primary">Loading...</span><br>
+                            <strong>Image:</strong> <span class="text-muted">Loading...</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <div class="card deployment-card border-warning">
+                    <div class="card-body">
+                        <h5 class="card-title text-warning">
+                            <span class="status-indicator status-warning"></span>
+                            BETA (Staging)
+                        </h5>
+                        <p class="card-text">
+                            <strong>Replicas:</strong> <span class="badge bg-warning">Loading...</span><br>
+                            <strong>Image:</strong> <span class="text-muted">Loading...</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <div class="card deployment-card border-danger">
+                    <div class="card-body">
+                        <h5 class="card-title text-danger">
+                            <span class="status-indicator status-stopped"></span>
+                            GAMMA (Emergency)
+                        </h5>
+                        <p class="card-text">
+                            <strong>Replicas:</strong> <span class="badge bg-danger">Loading...</span><br>
+                            <strong>Image:</strong> <span class="text-muted">Loading...</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Database Distribution Row -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <h4><i class="bi bi-database"></i> Database Distribution</h4>
+            </div>
+        </div>
+        
+        <div class="row mb-4" id="database-distribution" hx-get="/api/databases/distribution" hx-trigger="load, every 30s" hx-target="this" hx-swap="innerHTML">
+            <div class="col-md-4 mb-3">
+                <div class="card border-primary">
+                    <div class="card-body text-center">
+                        <h5 class="card-title text-primary">
+                            <i class="bi bi-hdd-stack"></i> ALPHA
+                        </h5>
+                        <h3 class="text-primary mb-1">Loading...</h3>
+                        <small class="text-muted">Databases</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <div class="card border-warning">
+                    <div class="card-body text-center">
+                        <h5 class="card-title text-warning">
+                            <i class="bi bi-hdd-stack"></i> BETA
+                        </h5>
+                        <h3 class="text-warning mb-1">Loading...</h3>
+                        <small class="text-muted">Databases</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <div class="card border-danger">
+                    <div class="card-body text-center">
+                        <h5 class="card-title text-danger">
+                            <i class="bi bi-hdd-stack"></i> GAMMA
+                        </h5>
+                        <h3 class="text-danger mb-1">Loading...</h3>
+                        <small class="text-muted">Databases</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Migration Controls Row -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <h4><i class="bi bi-gear-fill"></i> Migration Controls</h4>
+            </div>
+        </div>
+        
+        <div class="row mb-4">
+            <div class="col-md-6 mb-3">
+                <div class="card">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-arrow-clockwise"></i> System Operations</h5>
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-warning" 
+                                    hx-post="/api/databases/reset" 
+                                    hx-confirm="Reset all databases to alpha version?"
+                                    hx-target="#operation-result">
+                                <i class="bi bi-bootstrap-reboot"></i> Reset All to Alpha
+                            </button>
+                            <button class="btn btn-info" 
+                                    hx-post="/api/databases/unlock" 
+                                    hx-target="#operation-result">
+                                <i class="bi bi-unlock"></i> Unlock Migration
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <div class="card">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-info-circle"></i> Operation Result</h5>
+                        <div id="operation-result" class="alert alert-secondary">
+                            No operations performed yet.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Database Management Row -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <h4><i class="bi bi-database"></i> Database Management</h4>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5 class="card-title mb-0">Database Versions</h5>
+                            <div class="btn-group" role="group">
+                                <button class="btn btn-sm btn-outline-success" 
+                                        hx-get="/api/databases" 
+                                        hx-target="#database-list" 
+                                        hx-swap="innerHTML"
+                                        title="Rediscover databases">
+                                    <i class="bi bi-search"></i> Discover
+                                </button>
+                                <button class="btn btn-sm btn-outline-primary" 
+                                        hx-get="/api/databases/versions" 
+                                        hx-target="#database-list" 
+                                        hx-swap="innerHTML"
+                                        title="Refresh versions only">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div id="database-list" 
+                             hx-get="/api/databases/versions" 
+                             hx-trigger="load, every 30s" 
+                             hx-target="this" 
+                             hx-swap="innerHTML">
+                            <div class="text-center">
+                                <div class="spinner-border" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <p class="mt-2">Loading databases...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Refresh Button -->
+    <button class="btn btn-primary btn-lg refresh-btn" 
+            onclick="location.reload()" 
+            title="Refresh Dashboard">
+        <i class="bi bi-arrow-clockwise"></i>
+    </button>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Handle system status updates
+        document.body.addEventListener('htmx:afterSwap', function(event) {
+            if (event.target.id === 'system-status') {
+                // Add some visual feedback when system status updates
+                event.target.style.opacity = '0.7';
+                setTimeout(() => { event.target.style.opacity = '1'; }, 200);
+            }
+        });
+
+        // Handle operation results
+        document.body.addEventListener('htmx:afterRequest', function(event) {
+            if (event.detail.xhr.status === 200 && event.target.id === 'operation-result') {
+                // Parse response and show appropriate alert
+                try {
+                    const response = JSON.parse(event.detail.xhr.responseText);
+                    const alertDiv = event.target;
+                    alertDiv.className = 'alert alert-success';
+                    alertDiv.innerHTML = `<i class="bi bi-check-circle"></i> ${response.message}`;
+                    
+                    // Auto-refresh database list after operations
+                    htmx.trigger('#database-list', 'refresh');
+                    setTimeout(() => {
+                        document.querySelector('[hx-get="/api/databases/versions"]').click();
+                    }, 500);
+                } catch (e) {
+                    event.target.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Operation completed';
+                }
+            }
+        });
+
+        // Error handling
+        document.body.addEventListener('htmx:responseError', function(event) {
+            const target = event.target;
+            if (target.id === 'operation-result') {
+                target.className = 'alert alert-danger';
+                target.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Operation failed. Please try again.';
+            }
+        });
+
+        // Theme toggle functionality
+        function toggleTheme() {
+            const body = document.body;
+            const themeIcon = document.getElementById('theme-icon');
+            const currentTheme = body.getAttribute('data-bs-theme');
+            
+            if (currentTheme === 'dark') {
+                body.setAttribute('data-bs-theme', 'light');
+                themeIcon.className = 'bi bi-sun-fill';
+                localStorage.setItem('theme', 'light');
+            } else {
+                body.setAttribute('data-bs-theme', 'dark');
+                themeIcon.className = 'bi bi-moon-fill';
+                localStorage.setItem('theme', 'dark');
+            }
+        }
+
+        // Load saved theme on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            const body = document.body;
+            const themeIcon = document.getElementById('theme-icon');
+            
+            body.setAttribute('data-bs-theme', savedTheme);
+            if (savedTheme === 'dark') {
+                themeIcon.className = 'bi bi-moon-fill';
+            } else {
+                themeIcon.className = 'bi bi-sun-fill';
+            }
+        });
+    </script>
+</body>
+</html>

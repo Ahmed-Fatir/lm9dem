@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lm9dem
+  namespace: system-experio
+  labels:
+    app: lm9dem
+    component: dashboard
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: "10.10.10.54"
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+  selector:
+    app: lm9dem
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lm9dem
+  namespace: system-experio
+  labels:
+    app: lm9dem
+    component: dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lm9dem
+  template:
+    metadata:
+      labels:
+        app: lm9dem
+        component: dashboard
+    spec:
+      imagePullSecrets:
+        - name: experio-registry-secret
+      serviceAccountName: system-update-sa
+      containers:
+        - name: lm9dem
+          image: registry.experioservices.com/lm9dem:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: REDIS_HOST
+              value: "redis"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_DB
+              value: "2"
+            - name: NAMESPACE
+              value: "system-experio"
+            - name: INGRESS
+              value: "system-ingress"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: ceph-logs
+              mountPath: /ceph/data/infra/odoo/system-fs/alpha-beta-gamma
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: ceph-logs
+          hostPath:
+            path: /ceph/data/infra/odoo/system-fs/alpha-beta-gamma
+            type: Directory

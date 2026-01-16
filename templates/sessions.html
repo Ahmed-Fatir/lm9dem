@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sessions - lm9dem</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.0/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        :root {
+            --bs-body-bg: #f8f9fa;
+            --bs-body-color: #212529;
+            --bs-card-bg: #ffffff;
+            --bs-border-color: #dee2e6;
+        }
+        [data-bs-theme="dark"] {
+            --bs-body-bg: #212529;
+            --bs-body-color: #ffffff;
+            --bs-card-bg: #343a40;
+            --bs-border-color: #495057;
+        }
+        body {
+            background-color: var(--bs-body-bg);
+            color: var(--bs-body-color);
+            transition: background-color 0.3s, color 0.3s;
+        }
+        .card {
+            background-color: var(--bs-card-bg);
+            border-color: var(--bs-border-color);
+        }
+        .metrics-card { transition: all 0.3s; }
+        .metrics-card:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .session-details { max-height: 400px; overflow-y: auto; }
+        .expanded-row { display: table-row !important; }
+        .theme-toggle { transition: transform 0.3s; }
+        .theme-toggle:hover { transform: scale(1.1); }
+    </style>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            
+            // State management for expanded database
+            let expandedDatabase = localStorage.getItem('expandedDatabase') || null;
+            let manuallyCollapsed = false; // Track if user manually collapsed
+            
+            function setExpandedDatabase(dbName) {
+                // Hide all detail rows first and reset all buttons
+                document.querySelectorAll('[id^="details-"]').forEach(row => {
+                    row.style.display = 'none';
+                });
+                
+                // Reset all button icons and text
+                document.querySelectorAll('.view-sessions-btn').forEach(btn => {
+                    const icon = btn.querySelector('i');
+                    const textNode = btn.childNodes[btn.childNodes.length - 1];
+                    if (icon) icon.className = 'bi bi-eye';
+                    if (textNode && textNode.textContent) textNode.textContent = ' View Sessions';
+                });
+                
+                // Set the new expanded database
+                expandedDatabase = dbName;
+                manuallyCollapsed = false; // Reset manual collapse flag when expanding
+                if (dbName) {
+                    localStorage.setItem('expandedDatabase', dbName);
+                } else {
+                    localStorage.removeItem('expandedDatabase');
+                }
+                console.log('Expanded database set to:', expandedDatabase);
+            }
+            
+            // Updated ID generation to match backend
+            function createSafeDbId(dbName) {
+                return dbName.replace(/_/g, '-').replace(/\./g, 'dot').replace(/ /g, 'space').replace(/\//g, 'slash') + '-' + dbName.length;
+            }
+            
+            function updateDatabaseViews() {
+                // Hide all detail rows first
+                document.querySelectorAll('[id^="details-"]').forEach(row => {
+                    row.style.display = 'none';
+                });
+                
+                // Show the expanded one if any
+                if (expandedDatabase) {
+                    const safeDbId = expandedDatabase.replace(/[_\.\s]/g, '-');
+                    const detailRow = document.getElementById(`details-${safeDbId}`);
+                    if (detailRow) {
+                        detailRow.style.display = 'table-row';
+                    }
+                }
+            }
+            
+            // Function to load session data for a database
+            function loadSessionData(dbName, targetId) {
+                // Check if elements exist
+                const targetElement = document.getElementById(targetId);
+                const rowElement = document.getElementById(targetId.replace('-td', ''));
+                
+                if (!targetElement || !rowElement) {
+                    return Promise.reject('DOM elements not found');
+                }
+                
+                // Add loading indicator
+                targetElement.innerHTML = '<div class="text-center p-3"><div class="spinner-border spinner-border-sm" role="status"></div> Loading sessions...</div>';
+                rowElement.style.display = 'table-row';
+                targetElement.style.display = 'table-cell';  // Make sure the TD is visible
+                
+                // Make the API request
+                const apiUrl = `/api/sessions/database/${encodeURIComponent(dbName)}`;
+                
+                return fetch(apiUrl)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                        }
+                        return response.text();
+                    })
+                    .then(html => {
+                        targetElement.innerHTML = html;
+                        
+                        // Show both the row AND the td element  
+                        rowElement.style.display = 'table-row';
+                        targetElement.style.display = 'table-cell';  // Make sure the TD is visible too!
+                        
+                        // Update the button for this database to show it's expanded
+                        setTimeout(() => {
+                            const currentButton = document.querySelector(`.view-sessions-btn[data-db-name="${dbName}"]`);
+                            if (currentButton) {
+                                const icon = currentButton.querySelector('i');
+                                const textNode = currentButton.childNodes[currentButton.childNodes.length - 1];
+                                if (icon) icon.className = 'bi bi-eye-slash';
+                                if (textNode && textNode.textContent) textNode.textContent = ' Hide Sessions';
+                            }
+                        }, 100);
+                        
+                        return html;
+                    })
+                    .catch(err => {
+                        console.error('FETCH ERROR:', err);
+                        targetElement.innerHTML = `<div class="alert alert-danger">Error loading sessions: ${err.message}</div>`;
+                        throw err;
+                    });
+            }
+        
+            // Primary click handler using event delegation
+            document.addEventListener('click', function(e) {
+                if (e.target.closest('.view-sessions-btn')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    const button = e.target.closest('.view-sessions-btn');
+                    
+                    // Prevent rapid clicks
+                    if (button.disabled) {
+                        return;
+                    }
+                    
+                    const dbName = button.dataset.dbName;
+                    const targetId = button.dataset.targetId;
+                    
+                    if (!dbName || !targetId) {
+                        return;
+                    }
+                    
+                    // Disable button temporarily to prevent rapid clicks
+                    button.disabled = true;
+                    setTimeout(() => { button.disabled = false; }, 1000);
+                    
+                    // Check if this database is already expanded
+                    const targetElement = document.getElementById(targetId);
+                    const rowElement = document.getElementById(targetId.replace('-td', ''));
+                    
+                    const isCurrentlyVisible = rowElement && rowElement.style.display === 'table-row';
+                    
+                    if (isCurrentlyVisible) {
+                        // Collapse - hide the current expanded view
+                        rowElement.style.display = 'none';
+                        targetElement.style.display = 'none';
+                        
+                        // Clear expanded state and mark as manually collapsed
+                        expandedDatabase = null;
+                        manuallyCollapsed = true;
+                        localStorage.removeItem('expandedDatabase');
+                        
+                        // Update button text/icon to show collapsed state
+                        const buttonIcon = button.querySelector('i');
+                        const buttonText = button.childNodes[button.childNodes.length - 1];
+                        if (buttonIcon) buttonIcon.className = 'bi bi-eye';
+                        if (buttonText && buttonText.textContent) buttonText.textContent = ' View Sessions';
+                        
+                    } else {
+                        // Expand - hide all other detail rows first, then show this one
+                        setExpandedDatabase(dbName);
+                        
+                        // Update button text/icon to show expanded state
+                        const buttonIcon = button.querySelector('i');
+                        const buttonText = button.childNodes[button.childNodes.length - 1];
+                        if (buttonIcon) buttonIcon.className = 'bi bi-eye-slash';
+                        if (buttonText && buttonText.textContent) buttonText.textContent = ' Hide Sessions';
+                        
+                        // Load the session data
+                        loadSessionData(dbName, targetId)
+                            .catch(err => {});
+                    }
+                }
+            });
+            
+            // Note: Removed backup direct handlers as they were conflicting with primary handler
+            
+            // Auto-expand after content loads
+            document.addEventListener('htmx:afterSwap', function(e) {
+                // Show row after individual session load
+                if (e.target.id && e.target.id.includes('-td')) {
+                    const rowId = e.target.id.replace('-td', '');
+                    const detailRow = document.getElementById(rowId);
+                    if (detailRow) {
+                        setTimeout(() => {
+                            detailRow.style.display = 'table-row';
+                            detailRow.style.visibility = 'visible';
+                        }, 50);
+                    }
+                }
+                
+                // Auto-expand after full page content loads (but not if manually collapsed)
+                if (e.target.id === 'sessions-content' && expandedDatabase && !manuallyCollapsed) {
+                    const safeDbId = createSafeDbId(expandedDatabase);
+                    const targetId = `details-${safeDbId}-td`;
+                    
+                    setTimeout(() => {
+                        loadSessionData(expandedDatabase, targetId)
+                            .then(() => {
+                                // Update button state after auto-expand
+                                const buttons = document.querySelectorAll('.view-sessions-btn');
+                                buttons.forEach(btn => {
+                                    if (btn.dataset.dbName === expandedDatabase) {
+                                        const buttonIcon = btn.querySelector('i');
+                                        const buttonText = btn.childNodes[btn.childNodes.length - 1];
+                                        if (buttonIcon) buttonIcon.className = 'bi bi-eye-slash';
+                                        if (buttonText && buttonText.textContent) buttonText.textContent = ' Hide Sessions';
+                                    }
+                                });
+                            })
+                            .catch(err => {});
+                    }, 200);
+                }
+            });
+        });
+    </script>
+</head>
+<body data-bs-theme="light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-layers"></i> lm9dem
+            </a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">
+                    <i class="bi bi-house"></i> Dashboard
+                </a>
+                <a class="nav-link active" href="/sessions">
+                    <i class="bi bi-people"></i> Sessions
+                </a>
+                <a class="nav-link" href="/logs">
+                    <i class="bi bi-journal-text"></i> Logs
+                </a>
+            </div>
+            <button class="btn btn-outline-light theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                <i class="bi bi-sun-fill" id="theme-icon"></i>
+            </button>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <div class="row mb-4">
+            <div class="col-12">
+                <h2><i class="bi bi-people-fill"></i> Sessions Analytics</h2>
+                <p class="text-muted">Real-time analysis of user sessions across all databases</p>
+            </div>
+        </div>
+
+        <!-- Session Metrics and Database List -->
+        <div id="sessions-content" 
+             hx-get="/api/sessions/analysis" 
+             hx-trigger="load, every 30s" 
+             hx-target="this" 
+             hx-swap="innerHTML">
+            <div class="text-center">
+                <div class="spinner-border" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Analyzing sessions...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Theme toggle functionality
+        function toggleTheme() {
+            const body = document.body;
+            const themeIcon = document.getElementById('theme-icon');
+            const currentTheme = body.getAttribute('data-bs-theme');
+            
+            if (currentTheme === 'dark') {
+                body.setAttribute('data-bs-theme', 'light');
+                themeIcon.className = 'bi bi-sun-fill';
+                localStorage.setItem('theme', 'light');
+            } else {
+                body.setAttribute('data-bs-theme', 'dark');
+                themeIcon.className = 'bi bi-moon-fill';
+                localStorage.setItem('theme', 'dark');
+            }
+        }
+
+        // Load saved theme on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            const body = document.body;
+            const themeIcon = document.getElementById('theme-icon');
+            
+            body.setAttribute('data-bs-theme', savedTheme);
+            if (savedTheme === 'dark') {
+                themeIcon.className = 'bi bi-moon-fill';
+            } else {
+                themeIcon.className = 'bi bi-sun-fill';
+            }
+        });
+    </script>
+</body>
+</html>

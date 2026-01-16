@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logs - lm9dem</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --bs-body-bg: #f8f9fa;
+            --bs-body-color: #212529;
+            --bs-card-bg: #ffffff;
+            --bs-border-color: #dee2e6;
+            --hover-bg: #f8f9fa;
+        }
+        [data-bs-theme="dark"] {
+            --bs-body-bg: #212529;
+            --bs-body-color: #ffffff;
+            --bs-card-bg: #343a40;
+            --bs-border-color: #495057;
+            --hover-bg: #495057;
+        }
+        body {
+            background-color: var(--bs-body-bg);
+            color: var(--bs-body-color);
+            transition: background-color 0.3s, color 0.3s;
+        }
+        .card {
+            background-color: var(--bs-card-bg);
+            border-color: var(--bs-border-color);
+        }
+        .migration-item {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .migration-item:hover {
+            background-color: var(--hover-bg);
+            border-color: #007bff !important;
+        }
+        .log-item {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .log-item:hover {
+            background-color: var(--hover-bg);
+        }
+        .status-success { color: #198754; }
+        .status-failed { color: #dc3545; }
+        .status-partial { color: #fd7e14; }
+        .status-info { color: #0d6efd; }
+        .status-unknown { color: #6c757d; }
+        
+        .breadcrumb-nav {
+            background: linear-gradient(135deg, #343a40 0%, #495057 100%);
+            color: white;
+            padding: 1rem;
+            margin-bottom: 2rem;
+            border-radius: 0.5rem;
+        }
+        .breadcrumb-nav .breadcrumb {
+            margin-bottom: 0;
+            background: none;
+        }
+        .breadcrumb-nav .breadcrumb-item a {
+            color: #adb5bd;
+            text-decoration: none;
+        }
+        .breadcrumb-nav .breadcrumb-item a:hover {
+            color: #fff;
+        }
+        .breadcrumb-nav .breadcrumb-item.active {
+            color: #fff;
+        }
+        
+        .log-content {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            max-height: 70vh;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .deployment-badge {
+            font-size: 0.75rem;
+        }
+        
+        .file-size {
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+        
+        .theme-toggle { 
+            transition: transform 0.3s; 
+        }
+        .theme-toggle:hover { 
+            transform: scale(1.1); 
+        }
+    </style>
+</head>
+<body data-bs-theme="light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-layers"></i> lm9dem
+            </a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/">
+                    <i class="bi bi-house"></i> Dashboard
+                </a>
+                <a class="nav-link" href="/sessions">
+                    <i class="bi bi-people"></i> Sessions
+                </a>
+                <a class="nav-link active" href="/logs">
+                    <i class="bi bi-journal-text"></i> Logs
+                </a>
+            </div>
+            <button class="btn btn-outline-light theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                <i class="bi bi-sun-fill" id="theme-icon"></i>
+            </button>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- Navigation Breadcrumb -->
+        <div class="breadcrumb-nav">
+            <nav>
+                <ol class="breadcrumb" id="breadcrumb">
+                    <li class="breadcrumb-item active">
+                        <i class="bi bi-house-door"></i> Migration Logs
+                    </li>
+                </ol>
+            </nav>
+            <div id="current-title">
+                <h4 class="mb-0"><i class="bi bi-journal-text"></i> Alpha-Beta-Gamma Migration Logs</h4>
+                <p class="mb-0 text-light">Browse migration histories and detailed logs</p>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div id="content-area">
+            <!-- Loading State -->
+            <div class="text-center" id="loading">
+                <div class="spinner-border" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Loading migration logs...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Navigation state
+            const navigationState = {
+                currentView: 'migrations',
+                currentMigration: null,
+                currentLog: null
+            };
+
+            // Load initial migration list
+            loadMigrations();
+
+            // Navigation functions
+            function updateBreadcrumb(items) {
+                const breadcrumb = document.getElementById('breadcrumb');
+                breadcrumb.innerHTML = items.map((item, index) => {
+                    if (index === items.length - 1) {
+                        return `<li class="breadcrumb-item active">${item.icon} ${item.text}</li>`;
+                    } else {
+                        return `<li class="breadcrumb-item"><a href="#" onclick="${item.action}">${item.icon} ${item.text}</a></li>`;
+                    }
+                }).join('');
+            }
+
+            function updateTitle(title, subtitle) {
+                document.getElementById('current-title').innerHTML = `
+                    <h4 class="mb-0">${title}</h4>
+                    <p class="mb-0 text-light">${subtitle}</p>
+                `;
+            }
+
+            function showLoading() {
+                document.getElementById('content-area').innerHTML = `
+                    <div class="text-center" id="loading">
+                        <div class="spinner-border" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading...</p>
+                    </div>
+                `;
+            }
+
+            function loadMigrations() {
+                showLoading();
+                navigationState.currentView = 'migrations';
+                
+                updateBreadcrumb([
+                    { icon: '<i class="bi bi-house-door"></i>', text: 'Migration Logs', action: null }
+                ]);
+                updateTitle('<i class="bi bi-journal-text"></i> Alpha-Beta-Gamma Migration Logs', 'Browse migration histories and detailed logs');
+
+                fetch('/api/migrations')
+                    .then(response => response.json())
+                    .then(data => {
+                        displayMigrations(data.migrations);
+                    })
+                    .catch(error => {
+                        document.getElementById('content-area').innerHTML = `
+                            <div class="alert alert-danger">
+                                <i class="bi bi-exclamation-triangle"></i> Error loading migrations: ${error.message}
+                            </div>
+                        `;
+                    });
+            }
+
+            function displayMigrations(migrations) {
+                if (migrations.length === 0) {
+                    document.getElementById('content-area').innerHTML = `
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i> No migration logs found.
+                        </div>
+                    `;
+                    return;
+                }
+
+                const migrationsHtml = migrations.map(migration => {
+                    const statusClass = `status-${migration.status}`;
+                    const statusIcon = migration.status === 'success' ? 'check-circle' : 
+                                     migration.status === 'partial' ? 'exclamation-triangle' : 
+                                     migration.status === 'failed' ? 'x-circle' : 'question-circle';
+                    
+                    return `
+                        <div class="card migration-item mb-3 border" onclick="loadMigrationLogs('${migration.id}')">
+                            <div class="card-body">
+                                <div class="row align-items-center">
+                                    <div class="col-md-3">
+                                        <h6 class="mb-1">
+                                            <i class="bi bi-calendar3"></i> ${migration.timestamp}
+                                        </h6>
+                                        <small class="text-muted">${migration.id}</small>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <span class="badge deployment-badge bg-secondary">
+                                            ${migration.target_deployment}
+                                        </span>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="mb-1">
+                                            <small class="text-muted">
+                                                <i class="bi bi-box"></i> ${migration.deployed_image || 'N/A'}
+                                            </small>
+                                        </div>
+                                        <div class="d-flex gap-2">
+                                            <span class="badge bg-primary">${migration.database_count} DBs</span>
+                                            <span class="badge bg-success">${migration.success_count} ✓</span>
+                                            ${migration.fail_count > 0 ? `<span class="badge bg-danger">${migration.fail_count} ✗</span>` : ''}
+                                        </div>
+                                    </div>
+                                    <div class="col-md-1">
+                                        <i class="bi bi-${statusIcon} ${statusClass}"></i>
+                                        <span class="${statusClass} text-capitalize">${migration.status}</span>
+                                    </div>
+                                    <div class="col-md-2 text-end">
+                                        <i class="bi bi-chevron-right"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                document.getElementById('content-area').innerHTML = `
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <h5><i class="bi bi-list"></i> Recent Migrations (${migrations.length})</h5>
+                            <p class="text-muted">Click on a migration to view its log files</p>
+                        </div>
+                    </div>
+                    ${migrationsHtml}
+                `;
+            }
+
+            function loadMigrationLogs(migrationId) {
+                showLoading();
+                navigationState.currentView = 'logs';
+                navigationState.currentMigration = migrationId;
+                
+                updateBreadcrumb([
+                    { icon: '<i class="bi bi-house-door"></i>', text: 'Migration Logs', action: 'loadMigrations()' },
+                    { icon: '<i class="bi bi-folder"></i>', text: migrationId, action: null }
+                ]);
+                updateTitle(`<i class="bi bi-folder"></i> ${migrationId}`, 'Migration log files and database results');
+
+                fetch(`/api/migrations/${migrationId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        displayMigrationLogs(data.logs, migrationId);
+                    })
+                    .catch(error => {
+                        document.getElementById('content-area').innerHTML = `
+                            <div class="alert alert-danger">
+                                <i class="bi bi-exclamation-triangle"></i> Error loading migration logs: ${error.message}
+                            </div>
+                        `;
+                    });
+            }
+
+            function displayMigrationLogs(logs, migrationId) {
+                if (logs.length === 0) {
+                    document.getElementById('content-area').innerHTML = `
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i> No log files found in this migration.
+                        </div>
+                    `;
+                    return;
+                }
+
+                const logsHtml = logs.map(log => {
+                    const statusClass = `status-${log.status}`;
+                    const statusIcon = log.status === 'success' ? 'check-circle' : 
+                                      log.status === 'failed' ? 'x-circle' : 
+                                      log.status === 'info' ? 'info-circle' :
+                                      'question-circle';
+                    
+                    return `
+                        <tr class="log-item" onclick="loadLogContent('${migrationId}', '${log.filename}')">
+                            <td>
+                                <i class="bi bi-${statusIcon} ${statusClass}"></i>
+                            </td>
+                            <td>
+                                <strong>${log.database}</strong><br>
+                                <small class="text-muted">${log.filename}</small>
+                            </td>
+                            <td>
+                                <span class="badge ${log.status === 'success' ? 'bg-success' : 
+                                                   log.status === 'failed' ? 'bg-danger' : 
+                                                   log.status === 'info' ? 'bg-info' : 'bg-secondary'}">
+                                    ${log.status}
+                                </span>
+                            </td>
+                            <td>
+                                <span class="file-size">${log.size_mb} MB</span>
+                            </td>
+                            <td class="text-end">
+                                <i class="bi bi-chevron-right"></i>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                document.getElementById('content-area').innerHTML = `
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <h5><i class="bi bi-file-earmark-text"></i> Log Files (${logs.length})</h5>
+                            <p class="text-muted">Click on a log file to view its contents</p>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th width="5%">Status</th>
+                                    <th width="50%">Database / File</th>
+                                    <th width="15%">Result</th>
+                                    <th width="15%">Size</th>
+                                    <th width="5%"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${logsHtml}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+
+            function loadLogContent(migrationId, filename) {
+                showLoading();
+                navigationState.currentView = 'content';
+                navigationState.currentLog = filename;
+                
+                updateBreadcrumb([
+                    { icon: '<i class="bi bi-house-door"></i>', text: 'Migration Logs', action: 'loadMigrations()' },
+                    { icon: '<i class="bi bi-folder"></i>', text: migrationId, action: `loadMigrationLogs('${migrationId}')` },
+                    { icon: '<i class="bi bi-file-earmark-text"></i>', text: filename, action: null }
+                ]);
+                updateTitle(`<i class="bi bi-file-earmark-text"></i> ${filename}`, 'Log file content');
+
+                fetch(`/api/migrations/${migrationId}/logs/${filename}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        displayLogContent(data, migrationId, filename);
+                    })
+                    .catch(error => {
+                        document.getElementById('content-area').innerHTML = `
+                            <div class="alert alert-danger">
+                                <i class="bi bi-exclamation-triangle"></i> Error loading log content: ${error.message}
+                            </div>
+                        `;
+                    });
+            }
+
+            function displayLogContent(data, migrationId, filename) {
+                const sizeFormatted = (data.size / 1024 / 1024).toFixed(2);
+                
+                document.getElementById('content-area').innerHTML = `
+                    <div class="row mb-3">
+                        <div class="col-md-8">
+                            <h5><i class="bi bi-file-earmark-text"></i> ${filename}</h5>
+                            <p class="text-muted">Size: ${sizeFormatted} MB</p>
+                        </div>
+                        <div class="col-md-4 text-end">
+                            <button class="btn btn-outline-secondary btn-sm" onclick="downloadLog('${migrationId}', '${filename}')">
+                                <i class="bi bi-download"></i> Download
+                            </button>
+                            <button class="btn btn-outline-primary btn-sm" onclick="loadMigrationLogs('${migrationId}')">
+                                <i class="bi bi-arrow-left"></i> Back to Files
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-body p-0">
+                            <pre class="log-content p-3 mb-0">${data.content}</pre>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function downloadLog(migrationId, filename) {
+                const url = `/api/migrations/${migrationId}/logs/${filename}`;
+                fetch(url)
+                    .then(response => response.json())
+                    .then(data => {
+                        const blob = new Blob([data.content], { type: 'text/plain' });
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                    });
+            }
+
+            // Make functions global for onclick handlers
+            window.loadMigrations = loadMigrations;
+            window.loadMigrationLogs = loadMigrationLogs;
+            window.loadLogContent = loadLogContent;
+            window.downloadLog = downloadLog;
+        });
+
+        // Theme toggle functionality
+        function toggleTheme() {
+            const body = document.body;
+            const themeIcon = document.getElementById('theme-icon');
+            const currentTheme = body.getAttribute('data-bs-theme');
+            
+            if (currentTheme === 'dark') {
+                body.setAttribute('data-bs-theme', 'light');
+                themeIcon.className = 'bi bi-sun-fill';
+                localStorage.setItem('theme', 'light');
+            } else {
+                body.setAttribute('data-bs-theme', 'dark');
+                themeIcon.className = 'bi bi-moon-fill';
+                localStorage.setItem('theme', 'dark');
+            }
+        }
+
+        // Load saved theme on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            const body = document.body;
+            const themeIcon = document.getElementById('theme-icon');
+            
+            body.setAttribute('data-bs-theme', savedTheme);
+            if (savedTheme === 'dark') {
+                themeIcon.className = 'bi bi-moon-fill';
+            } else {
+                themeIcon.className = 'bi bi-sun-fill';
+            }
+        });
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
