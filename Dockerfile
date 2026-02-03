@@ -22,12 +22,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+COPY .ssh /home/appuser/.ssh
+
 # Create non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 
 # Set proper SSH permissions
-RUN mkdir -p /home/appuser/.ssh && \
-    chown -R appuser:appuser /home/appuser/.ssh && \
+RUN chown -R appuser:appuser /home/appuser/.ssh && \
     chmod 700 /home/appuser/.ssh && \
     chmod 600 /home/appuser/.ssh/* 2>/dev/null || true
 
