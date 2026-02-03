@@ -191,6 +191,11 @@
                                     hx-target="#operation-result">
                                 <i class="bi bi-unlock"></i> Unlock Migration
                             </button>
+                            <button class="btn btn-success" 
+                                    onclick="discoverCompanies()" 
+                                    id="discover-companies-button">
+                                <i class="bi bi-building"></i> Discover Companies
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -465,6 +470,78 @@
                 themeIcon.className = 'bi bi-moon-fill';
                 localStorage.setItem('theme', 'dark');
             }
+        }
+        
+        // Company discovery function
+        function discoverCompanies() {
+            const button = document.getElementById('discover-companies-button');
+            const resultDiv = document.getElementById('operation-result');
+            
+            // Update button state
+            button.disabled = true;
+            button.className = 'btn btn-warning';
+            button.innerHTML = '<i class="bi bi-clock"></i> Discovering...';
+            
+            // Show progress message
+            resultDiv.innerHTML = `
+                <div class="alert alert-info">
+                    <i class="bi bi-clock"></i> 
+                    <strong>Discovering company names...</strong><br>
+                    <small>This may take 1-2 minutes for all 264 databases.</small>
+                </div>
+            `;
+            
+            // Start discovery
+            fetch('/api/databases/discover-companies', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Reset button
+                button.disabled = false;
+                button.className = 'btn btn-success';
+                button.innerHTML = '<i class="bi bi-building"></i> Discover Companies';
+                
+                // Show result
+                let alertClass = data.success ? 'alert-success' : 'alert-danger';
+                let resultHTML = `
+                    <div class="${alertClass}">
+                        ${data.message}
+                `;
+                
+                if (data.success) {
+                    resultHTML += `
+                        <br><small>Found: ${data.companies_found} companies</small>
+                    `;
+                    if (data.stale_cleaned > 0) {
+                        resultHTML += `<br><small>Cleaned: ${data.stale_cleaned} stale entries</small>`;
+                    }
+                    
+                    // Auto-refresh database list to show company names
+                    setTimeout(() => {
+                        htmx.trigger('#database-list', 'refresh');
+                    }, 1000);
+                }
+                
+                resultHTML += '</div>';
+                resultDiv.innerHTML = resultHTML;
+            })
+            .catch(error => {
+                // Reset button
+                button.disabled = false;
+                button.className = 'btn btn-success';
+                button.innerHTML = '<i class="bi bi-building"></i> Discover Companies';
+                
+                resultDiv.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle"></i> 
+                        Company discovery failed: ${error.message}
+                    </div>
+                `;
+            });
         }
 
         // Load saved theme on page load

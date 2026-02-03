@@ -313,6 +313,58 @@ class RedisHelper:
             logger.error(f"Failed to cleanup stale database versions: {e}")
             return 0
 
+    def set_company_name(self, database: str, company_name: str) -> bool:
+        """Set company name for a database"""
+        try:
+            if not self.redis_client:
+                self._connect()
+            
+            key = f"company_name:{database}"
+            return self.set(key, company_name)
+        except Exception as e:
+            logger.error(f"Failed to set company name for {database}: {e}")
+            return False
+
+    def get_company_name(self, database: str) -> str:
+        """Get company name for a database"""
+        try:
+            if not self.redis_client:
+                self._connect()
+            
+            key = f"company_name:{database}"
+            company_name = self.get(key)
+            return company_name if company_name else "Unknown"
+        except Exception as e:
+            logger.error(f"Failed to get company name for {database}: {e}")
+            return "Unknown"
+
+    def cleanup_stale_company_names(self, existing_databases: List[str]) -> int:
+        """Remove stale company_name entries that don't correspond to existing databases"""
+        try:
+            if not self.redis_client:
+                self._connect()
+            
+            # Get all company_name keys
+            company_keys = self.keys('company_name:*')
+            stale_count = 0
+            
+            for key in company_keys:
+                # Extract database name from key (remove 'company_name:' prefix)
+                db_name = key[13:]  # len('company_name:') = 13
+                
+                # If this database doesn't exist anymore, remove the Redis key
+                if db_name not in existing_databases:
+                    self.redis_client.delete(key)
+                    stale_count += 1
+                    logger.info(f"Removed stale company_name entry for: {db_name}")
+            
+            logger.info(f"Company cleanup completed: removed {stale_count} stale entries")
+            return stale_count
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup stale company names: {e}")
+            return 0
+
     def start_deployment(self, user="unknown"):
         """Start a deployment and lock it"""
         try:
@@ -938,6 +990,7 @@ async def render_database_table(databases: List[str]) -> HTMLResponse:
     <thead class="table-dark">
         <tr>
             <th>Database</th>
+            <th>Company</th>
             <th>Version</th>
             <th>Last Updated</th>
             <th>Actions</th>
@@ -949,6 +1002,7 @@ async def render_database_table(databases: List[str]) -> HTMLResponse:
     for db in databases:
         version = redis_helper.get(f"db_version:{db}")
         updated = redis_helper.get(f"db_updated:{db}")
+        company_name = redis_helper.get_company_name(db)
         
         version = version or "alpha"
         updated = updated or "Never"
@@ -962,6 +1016,7 @@ async def render_database_table(databases: List[str]) -> HTMLResponse:
         html += f'''
         <tr>
             <td><strong>{db}</strong></td>
+            <td><span class="text-primary">{company_name}</span></td>
             <td><span class="badge bg-{version_class}">{version.upper()}</span></td>
             <td class="text-muted">{updated.split('T')[0] if 'T' in updated else updated}</td>
             <td>
@@ -1102,6 +1157,78 @@ async def unlock_migration():
         "message": "Migration lock removed" if deleted else "No lock found",
         "success": True
     }
+
+@app.post("/api/databases/discover-companies")
+async def discover_companies():
+    """Trigger company name discovery for all databases"""
+    try:
+        import subprocess
+        import os
+        
+        # Path to the company discovery script
+        script_path = "/app/scripts/discover_companies_direct.sh"
+        
+        # Check if script exists, if not, use the one from the repo
+        if not os.path.exists(script_path):
+            script_path = "/home/experio/system-ns/lm9dem/scripts/discover_companies_direct.sh"
+        
+        logger.info("Starting company name discovery...")
+        
+        # Run the discovery script
+        result = subprocess.run([script_path], 
+                              capture_output=True, 
+                              text=True, 
+                              timeout=300)  # 5 minute timeout
+        
+        if result.returncode != 0:
+            error_msg = f"Company discovery failed: {result.stderr}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "message": "❌ Company discovery failed",
+                "error": error_msg
+            }
+        
+        # Parse the output and store in Redis
+        lines = result.stdout.strip().split('\n')
+        success_count = 0
+        
+        for line in lines:
+            if ':' in line and not line.startswith('['):  # Skip log lines
+                try:
+                    database, company_name = line.split(':', 1)
+                    redis_helper.set_company_name(database, company_name)
+                    success_count += 1
+                except ValueError:
+                    continue  # Skip malformed lines
+        
+        # Clean up stale entries
+        databases = discover_databases()
+        stale_count = redis_helper.cleanup_stale_company_names(databases)
+        
+        logger.info(f"Company discovery completed: {success_count} companies stored")
+        
+        return {
+            "success": True,
+            "message": f"✅ Discovered {success_count} company names",
+            "companies_found": success_count,
+            "stale_cleaned": stale_count
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "message": "❌ Company discovery timed out (5 minutes)",
+            "error": "Timeout"
+        }
+    except Exception as e:
+        error_msg = f"Company discovery error: {str(e)}"
+        logger.error(error_msg)
+        return {
+            "success": False,
+            "message": "❌ Company discovery failed",
+            "error": error_msg
+        }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # LOGS ENDPOINTS
