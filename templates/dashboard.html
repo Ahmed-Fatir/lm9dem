@@ -191,11 +191,6 @@
                                     hx-target="#operation-result">
                                 <i class="bi bi-unlock"></i> Unlock Migration
                             </button>
-                            <button class="btn btn-success" 
-                                    onclick="discoverCompanies()" 
-                                    id="discover-companies-button">
-                                <i class="bi bi-building"></i> Discover Companies
-                            </button>
                         </div>
                     </div>
                 </div>
@@ -237,24 +232,61 @@
         <div class="row">
             <div class="col-12">
                 <div class="card">
+                    <div class="card-header">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-database"></i> Database Versions
+                            </h5>
+                            <div class="btn-toolbar" role="toolbar">
+                                <div class="btn-group me-2" role="group" aria-label="Database actions">
+                                    <button class="btn btn-outline-primary btn-sm" 
+                                            hx-get="/api/databases/versions" 
+                                            hx-target="#database-list" 
+                                            hx-swap="innerHTML"
+                                            title="Refresh versions">
+                                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                                    </button>
+                                    <button class="btn btn-outline-success btn-sm" 
+                                            hx-get="/api/databases" 
+                                            hx-target="#database-list" 
+                                            hx-swap="innerHTML"
+                                            title="Rediscover databases">
+                                        <i class="bi bi-search"></i> Discover
+                                    </button>
+                                </div>
+                                <div class="btn-group" role="group" aria-label="Company actions">
+                                    <button class="btn btn-success btn-sm" 
+                                            onclick="discoverCompanies()"
+                                            id="discover-companies-button">
+                                        <i class="bi bi-building"></i> Companies
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center mb-3">
-                            <h5 class="card-title mb-0">Database Versions</h5>
-                            <div class="btn-group" role="group">
-                                <button class="btn btn-sm btn-outline-success" 
-                                        hx-get="/api/databases" 
-                                        hx-target="#database-list" 
-                                        hx-swap="innerHTML"
-                                        title="Rediscover databases">
-                                    <i class="bi bi-search"></i> Discover
-                                </button>
-                                <button class="btn btn-sm btn-outline-primary" 
-                                        hx-get="/api/databases/versions" 
-                                        hx-target="#database-list" 
-                                        hx-swap="innerHTML"
-                                        title="Refresh versions only">
-                                    <i class="bi bi-arrow-clockwise"></i> Refresh
-                                </button>
+                        <!-- Search Bar -->
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                    <input type="text" 
+                                           id="database-search" 
+                                           class="form-control" 
+                                           placeholder="Search databases or companies..." 
+                                           onkeyup="filterDatabases()">
+                                    <button class="btn btn-outline-secondary" 
+                                            type="button" 
+                                            onclick="clearSearch()"
+                                            title="Clear search">
+                                        <i class="bi bi-x"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="d-flex align-items-center justify-content-end text-muted h-100">
+                                    <small id="search-results">Showing all databases</small>
+                                </div>
                             </div>
                         </div>
                         
@@ -542,6 +574,53 @@
                     </div>
                 `;
             });
+        }
+
+        // Database search functionality
+        function filterDatabases() {
+            const searchInput = document.getElementById('database-search');
+            const searchTerm = searchInput.value.toLowerCase();
+            const table = document.querySelector('#database-list table tbody');
+            const searchResults = document.getElementById('search-results');
+            
+            if (!table) {
+                return; // Table not loaded yet
+            }
+            
+            const rows = table.querySelectorAll('tr');
+            let visibleCount = 0;
+            
+            rows.forEach(row => {
+                const databaseCell = row.querySelector('td:first-child');
+                const companyCell = row.querySelector('td:nth-child(2)');
+                
+                if (databaseCell && companyCell) {
+                    const databaseName = databaseCell.textContent.toLowerCase();
+                    const companyName = companyCell.textContent.toLowerCase();
+                    
+                    const matches = databaseName.includes(searchTerm) || companyName.includes(searchTerm);
+                    
+                    if (matches || searchTerm === '') {
+                        row.style.display = '';
+                        visibleCount++;
+                    } else {
+                        row.style.display = 'none';
+                    }
+                }
+            });
+            
+            // Update search results text
+            if (searchTerm === '') {
+                searchResults.textContent = 'Showing all databases';
+            } else {
+                searchResults.textContent = `Found ${visibleCount} matching database${visibleCount !== 1 ? 's' : ''}`;
+            }
+        }
+        
+        function clearSearch() {
+            const searchInput = document.getElementById('database-search');
+            searchInput.value = '';
+            filterDatabases();
         }
 
         // Load saved theme on page load
