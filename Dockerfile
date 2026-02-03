@@ -4,6 +4,7 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y \
     curl \
     postgresql-client \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install kubectl
@@ -23,6 +24,13 @@ COPY . .
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+
+# Set proper SSH permissions
+RUN mkdir -p /home/appuser/.ssh && \
+    chown -R appuser:appuser /home/appuser/.ssh && \
+    chmod 700 /home/appuser/.ssh && \
+    chmod 600 /home/appuser/.ssh/* 2>/dev/null || true
+
 USER appuser
 
 # Expose port

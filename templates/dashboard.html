@@ -41,6 +41,11 @@
         .refresh-btn { position: fixed; bottom: 20px; right: 20px; }
         .theme-toggle { transition: transform 0.3s; }
         .theme-toggle:hover { transform: scale(1.1); }
+        .btn-deploying { 
+            background-color: #fd7e14 !important; 
+            border-color: #fd7e14 !important;
+            opacity: 0.8;
+        }
     </style>
 </head>
 <body data-bs-theme="light">
@@ -170,7 +175,7 @@
         </div>
         
         <div class="row mb-4">
-            <div class="col-md-6 mb-3">
+            <div class="col-md-3 mb-3">
                 <div class="card">
                     <div class="card-body">
                         <h5 class="card-title"><i class="bi bi-arrow-clockwise"></i> System Operations</h5>
@@ -186,6 +191,21 @@
                                     hx-target="#operation-result">
                                 <i class="bi bi-unlock"></i> Unlock Migration
                             </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-3">
+                <div class="card">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-rocket-takeoff"></i> Auto Deployment</h5>
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-success" 
+                                    onclick="triggerDeployment()" 
+                                    id="deploy-button">
+                                <i class="bi bi-download"></i> Fetch and Deploy
+                            </button>
+                            <small class="text-muted">Checks GitHub releases and deploys new versions</small>
                         </div>
                     </div>
                 </div>
@@ -300,7 +320,137 @@
             }
         });
 
+        function checkDeploymentStatus() {
+            fetch('/api/deployment/status')
+                .then(response => response.json())
+                .then(data => {
+                    const button = document.getElementById('deploy-button');
+                    const resultDiv = document.getElementById('operation-result');
+                    
+                    if (data.active) {
+                        // Deployment is running - show loading state
+                        button.disabled = true;
+                        button.className = 'btn btn-deploying';
+                        button.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Deploying...';
+                        
+                        resultDiv.innerHTML = `
+                            <div class="alert alert-info">
+                                <i class="bi bi-hourglass-split"></i> 
+                                <strong>Deployment in progress by ${data.user}</strong><br>
+                                <small>Started: ${data.started_at}</small>
+                                <div class="progress mt-2">
+                                    <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div>
+                                </div>
+                            </div>
+                        `;
+                        
+                        // Check status again in 10 seconds
+                        setTimeout(checkDeploymentStatus, 10000);
+                    } else if (data.last_result) {
+                        // Show last result
+                        const alertClass = data.last_result.success ? 'alert-success' : 'alert-danger';
+                        resultDiv.innerHTML = `
+                            <div class="${alertClass}">
+                                <strong>${data.last_result.message}</strong><br>
+                                <small>Finished: ${data.last_result.finished_at}</small>
+                            </div>
+                        `;
+                    }
+                })
+                .catch(err => {
+                    console.log('Could not check deployment status:', err);
+                });
+        }
+
         // Theme toggle functionality
+        function triggerDeployment() {
+            if (!confirm("Trigger auto-deployment from GitHub releases?")) {
+                return;
+            }
+            
+            const button = document.getElementById('deploy-button');
+            const resultDiv = document.getElementById('operation-result');
+            
+            // Show loading state
+            button.disabled = true;
+            button.className = 'btn btn-deploying';
+            button.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Deploying...';
+            
+            resultDiv.innerHTML = `
+                <div class="alert alert-info">
+                    <i class="bi bi-hourglass-split"></i> 
+                    Deployment in progress... This may take several minutes.
+                    <div class="progress mt-2">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div>
+                    </div>
+                </div>
+            `;
+            
+            fetch('/api/deployment/trigger', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Reset button
+                button.disabled = false;
+                button.className = 'btn btn-success';
+                button.innerHTML = '<i class="bi bi-download"></i> Fetch and Deploy';
+                
+                // Display structured result
+                let resultHTML = `
+                    <div class="${data.alert_class || 'alert-info'}">
+                        <div class="mb-2">
+                            <strong>${data.message}</strong>
+                        </div>
+                `;
+                
+                if (data.latest_version && data.latest_version !== 'unknown') {
+                    resultHTML += `
+                        <div class="row small mt-2">
+                            <div class="col-md-6">
+                                <strong>Latest Release:</strong> ${data.latest_version}<br>
+                                <strong>Stage:</strong> ${data.stage}<br>
+                                <strong>Status:</strong> ${data.status}
+                            </div>
+                            <div class="col-md-6">
+                                <strong>Alpha:</strong> ${data.alpha_version}<br>
+                                <strong>Beta:</strong> ${data.beta_version}<br>
+                                <strong>Gamma:</strong> ${data.gamma_version}
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                if (data.output && data.output.trim()) {
+                    resultHTML += `
+                        <details class="mt-2">
+                            <summary class="btn btn-sm btn-outline-secondary">View Full Output</summary>
+                            <pre class="mt-2 p-2 bg-light rounded" style="max-height: 300px; overflow-y: auto; font-size: 0.8em;">${data.output}</pre>
+                        </details>
+                    `;
+                }
+                
+                resultHTML += '</div>';
+                resultDiv.innerHTML = resultHTML;
+            })
+            .catch(error => {
+                // Reset button
+                button.disabled = false;
+                button.className = 'btn btn-success';
+                button.innerHTML = '<i class="bi bi-download"></i> Fetch and Deploy';
+                
+                resultDiv.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle"></i> 
+                        <strong>Network Error:</strong> ${error.message}
+                    </div>
+                `;
+            });
+        }
+
         function toggleTheme() {
             const body = document.body;
             const themeIcon = document.getElementById('theme-icon');
@@ -329,6 +479,9 @@
             } else {
                 themeIcon.className = 'bi bi-sun-fill';
             }
+            
+            // Check deployment status on page load
+            checkDeploymentStatus();
         });
     </script>
 </body>

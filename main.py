@@ -313,6 +313,83 @@ class RedisHelper:
             logger.error(f"Failed to cleanup stale database versions: {e}")
             return 0
 
+    def start_deployment(self, user="unknown"):
+        """Start a deployment and lock it"""
+        try:
+            # Check if deployment is already running
+            if self.redis_client.exists('deployment:active'):
+                current_info = self.redis_client.hgetall('deployment:active')
+                return {
+                    "success": False, 
+                    "error": f"Deployment already in progress by {current_info.get('user', 'unknown')}",
+                    "started_at": current_info.get('started_at', ''),
+                    "user": current_info.get('user', 'unknown')
+                }
+            
+            # Set deployment lock with expiration (30 minutes max)
+            deployment_info = {
+                "user": user,
+                "started_at": datetime.now().isoformat(),
+                "status": "running"
+            }
+            self.redis_client.hset('deployment:active', mapping=deployment_info)
+            self.redis_client.expire('deployment:active', 1800)  # 30 minutes
+            
+            return {"success": True, "message": "Deployment started"}
+            
+        except Exception as e:
+            logger.error(f"Error starting deployment: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def finish_deployment(self, result_data=None):
+        """Finish deployment and clear lock"""
+        try:
+            # Store deployment result
+            if result_data:
+                self.redis_client.hset('deployment:last_result', mapping={
+                    "finished_at": datetime.now().isoformat(),
+                    "success": str(result_data.get('success', False)),
+                    "message": result_data.get('message', ''),
+                    "output": result_data.get('output', '')[:5000]  # Limit size
+                })
+                self.redis_client.expire('deployment:last_result', 86400)  # 24 hours
+            
+            # Clear active deployment lock
+            self.redis_client.delete('deployment:active')
+            
+        except Exception as e:
+            logger.error(f"Error finishing deployment: {e}")
+    
+    def get_deployment_status(self):
+        """Get current deployment status"""
+        try:
+            if self.redis_client.exists('deployment:active'):
+                info = self.redis_client.hgetall('deployment:active')
+                return {
+                    "active": True,
+                    "user": info.get('user', 'unknown'),
+                    "started_at": info.get('started_at', ''),
+                    "status": info.get('status', 'running')
+                }
+            else:
+                # Check last result
+                if self.redis_client.exists('deployment:last_result'):
+                    result = self.redis_client.hgetall('deployment:last_result')
+                    return {
+                        "active": False,
+                        "last_result": {
+                            "finished_at": result.get('finished_at', ''),
+                            "success": result.get('success', 'false') == 'true',
+                            "message": result.get('message', '')
+                        }
+                    }
+                else:
+                    return {"active": False, "last_result": None}
+                    
+        except Exception as e:
+            logger.error(f"Error getting deployment status: {e}")
+            return {"active": False, "error": str(e)}
+
 
 # Kubernetes helper class (ported from bash script)
 class KubernetesHelper:
@@ -1209,6 +1286,164 @@ async def get_log_content(migration_id: str, log_filename: str):
     except Exception as e:
         logger.error(f"Error getting log content for {migration_id}/{log_filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting log content: {str(e)}")
+
+@app.get("/api/deployment/status")
+async def get_deployment_status():
+    """Get current deployment status"""
+    try:
+        return redis_helper.get_deployment_status()
+    except Exception as e:
+        logger.error(f"Error getting deployment status: {e}")
+        return {"active": False, "error": str(e)}
+
+@app.post("/api/deployment/trigger")
+async def trigger_deployment(request: Request):
+    """Trigger auto-deployment with concurrency control"""
+    try:
+        # Get user info (could be from headers, auth, etc.)
+        user_ip = request.client.host if request.client else "unknown"
+        user = f"user-{user_ip}"
+        
+        # Try to start deployment (this will fail if one is already running)
+        start_result = redis_helper.start_deployment(user)
+        if not start_result["success"]:
+            return {
+                "success": False,
+                "message": f"🚫 Deployment blocked: {start_result['error']}",
+                "alert_class": "alert alert-warning",
+                "output": f"Another deployment is already in progress by {start_result.get('user', 'unknown')} since {start_result.get('started_at', 'unknown')}",
+                "status": "blocked"
+            }
+        
+        try:
+            cmd = 'ssh -o StrictHostKeyChecking=no experio@10.10.10.40 "/home/experio/workspace/Watcher/auto-deploy/check-and-deploy.sh"'
+            
+            # Execute command with real-time output capture
+            process = subprocess.Popen(
+                cmd, 
+                shell=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            output_lines = []
+            deployment_status = "running"
+            current_stage = "starting"
+            
+            # Read output line by line
+            for line in iter(process.stdout.readline, ''):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                output_lines.append(line)
+                
+                # Parse deployment stages from script output
+                if "Starting Auto-Deploy Check" in line:
+                    current_stage = "initializing"
+                elif "Updating local repository" in line:
+                    current_stage = "updating_repo"
+                elif "Latest release:" in line:
+                    current_stage = "checking_versions"
+                elif "Version mismatch detected" in line:
+                    current_stage = "building"
+                elif "Building docker image" in line:
+                    current_stage = "building"
+                elif "Pushing image to registry" in line:
+                    current_stage = "pushing"
+                elif "Deploying to k8s" in line:
+                    current_stage = "deploying"
+                elif "Deployment successful" in line:
+                    current_stage = "completed"
+                    deployment_status = "success"
+                elif "No update needed" in line:
+                    current_stage = "up_to_date"
+                    deployment_status = "up_to_date"
+                elif any(word in line.lower() for word in ["failed", "error"]):
+                    deployment_status = "failed"
+            
+            process.stdout.close()
+            return_code = process.wait()
+            
+            # Parse key information from output
+            latest_version = "unknown"
+            alpha_version = "unknown"
+            beta_version = "unknown"
+            gamma_version = "unknown"
+            
+            for line in output_lines:
+                if "Latest release:" in line:
+                    latest_version = line.split(":")[-1].strip()
+                elif "Alpha deployment:" in line:
+                    alpha_version = line.split(":")[-1].strip()
+                elif "Beta deployment:" in line:
+                    beta_version = line.split(":")[-1].strip()
+                elif "Gamma deployment:" in line:
+                    gamma_version = line.split(":")[-1].strip()
+            
+            # Format structured output
+            if return_code == 0:
+                if deployment_status == "up_to_date":
+                    status_message = f"✅ System is up to date (v{latest_version})"
+                    alert_class = "alert-info"
+                else:
+                    status_message = f"✅ Deployment successful! Updated to v{latest_version}"
+                    alert_class = "alert-success"
+            else:
+                status_message = f"❌ Deployment failed (exit code: {return_code})"
+                alert_class = "alert-danger"
+            
+            # Return structured output
+            full_output = "\n".join(output_lines[-50:])  # Last 50 lines
+            
+            result_data = {
+                "success": return_code == 0,
+                "status": deployment_status,
+                "stage": current_stage,
+                "message": status_message,
+                "latest_version": latest_version,
+                "alpha_version": alpha_version,
+                "beta_version": beta_version,
+                "gamma_version": gamma_version,
+                "return_code": return_code,
+                "output": full_output,
+                "alert_class": alert_class
+            }
+            
+            # Finish deployment and store result
+            redis_helper.finish_deployment(result_data)
+            return result_data
+            
+        except subprocess.TimeoutExpired:
+            result_data = {
+                "success": False,
+                "status": "timeout",
+                "message": "⏱️ Deployment timed out after 5 minutes",
+                "alert_class": "alert-warning"
+            }
+            redis_helper.finish_deployment(result_data)
+            return result_data
+        except Exception as e:
+            result_data = {
+                "success": False,
+                "status": "error",
+                "message": f"❌ Error: {str(e)}",
+                "alert_class": "alert-danger"
+            }
+            redis_helper.finish_deployment(result_data)
+            return result_data
+            
+    except Exception as e:
+        result_data = {
+            "success": False,
+            "status": "error",
+            "message": f"❌ Internal Error: {str(e)}",
+            "alert_class": "alert-danger"
+        }
+        redis_helper.finish_deployment(result_data)
+        return result_data
 
 @app.get("/health")
 async def health_check():
