@@ -16,10 +16,10 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-  - host: lm9dem.experioservices.com
+  # Public downloads (no VPN required)
+  - host: downloads.experioservices.com
     http:
       paths:
-      # Regular HTTP traffic - catch-all MUST be last
       - path: /
         pathType: Prefix
         backend:

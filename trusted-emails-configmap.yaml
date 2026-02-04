@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trusted-emails
+  namespace: system-experio
+data:
+  emails.properties: |
+    Abderrahmane ATOUANI=a.atouani@experio.ma
+    Ahmed FATIR=a.fatir@experio.ma
+    Anas SAHIR=a.sahir@experio.ma
+    Brahim LAMNAOUAR=brahim@experio.ma
+    Chaymae ANOUAF=c.anouaf@experio.ma
+    Mohammed EL HARCHI=m.elharchi@experio.ma
+    Nouhaila CHAFIK=n.chafik@experio.ma
+    Redouane KARTTI=r.kartti@experio.ma
+    Redouane IBEN-HAMOU=r.ibenhamou@experio.ma
+    Wail KOUNDI=w.koundi@experio.ma

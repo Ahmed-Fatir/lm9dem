@@ -22,6 +22,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Make backup scripts executable
+RUN chmod +x /app/scripts/*.sh 2>/dev/null || true
+
+# Create downloads directories with proper permissions
+RUN mkdir -p /app/downloads/files /app/downloads/tokens /app/downloads/jobs
+
 COPY .ssh /home/appuser/.ssh
 
 # Create non-root user

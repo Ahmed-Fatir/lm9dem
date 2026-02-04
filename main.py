@@ -5,7 +5,7 @@ A FastAPI service providing web interface for Alpha-Beta-Gamma migration managem
 """
 
 from fastapi import FastAPI, Request, HTTPException, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import redis
@@ -15,6 +15,8 @@ import os
 import logging
 import pickle
 import base64
+import uuid
+import time
 from urllib.parse import quote
 from typing import Dict, List, Optional
 from pydantic import BaseModel
@@ -31,7 +33,192 @@ REDIS_DB = int(os.getenv('REDIS_DB', '2'))
 NAMESPACE = os.getenv('NAMESPACE', 'system-experio')
 INGRESS = os.getenv('INGRESS', 'system-ingress')
 
+# Infrastructure Configuration (NO DEFAULTS - FAIL FAST)
+def get_required_env(key: str) -> str:
+    """Get required environment variable or fail fast with NO fallback"""
+    value = os.getenv(key)
+    if not value:
+        raise RuntimeError(f"CRITICAL: Required configuration {key} is missing. Application cannot start.")
+    return value
+
+# LoadBalancer IPs
+FULL_ACCESS_LB_IP = get_required_env('FULL_ACCESS_LB_IP')
+BACKUP_ONLY_LB_IP = get_required_env('BACKUP_ONLY_LB_IP')
+
+# Deployment Server
+DEPLOYMENT_SERVER_IP = get_required_env('DEPLOYMENT_SERVER_IP')
+
+# Domain Configuration
+MAIN_DOMAIN = get_required_env('MAIN_DOMAIN')
+DOWNLOADS_DOMAIN = get_required_env('DOWNLOADS_DOMAIN')
+MAILING_DOMAIN = get_required_env('MAILING_DOMAIN')
+
+# Ceph Storage Paths
+CEPH_DATA_PATH = get_required_env('CEPH_DATA_PATH')
+CEPH_BACKUP_PATH = get_required_env('CEPH_BACKUP_PATH')
+DOWNLOADS_BASE_PATH = get_required_env('DOWNLOADS_BASE_PATH')
+TOKENS_PATH = get_required_env('TOKENS_PATH')
+
+# Script Paths
+BACKUP_SCRIPT_PATH = get_required_env('BACKUP_SCRIPT_PATH')
+DISCOVERY_SCRIPT_PATH = get_required_env('DISCOVERY_SCRIPT_PATH')
+
+# SSH Configuration
+SSH_USERNAME = get_required_env('SSH_USERNAME')
+
+# Email Configuration
+ADMIN_EMAIL = get_required_env('ADMIN_EMAIL')
+MAILING_SERVICE_URL = get_required_env('MAILING_SERVICE_URL')
+MAILING_TOKEN = get_required_env('MAILING_TOKEN')
+
+# Backup system configuration
+def load_trusted_emails():
+    """Load trusted emails from ConfigMap"""
+    try:
+        emails_file = "/app/config/emails/emails.properties"
+        trusted_emails = {}
+        trusted_email_list = []
+        
+        if os.path.exists(emails_file):
+            with open(emails_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line and not line.startswith('#'):
+                        name, email = line.split('=', 1)
+                        trusted_emails[email.strip()] = name.strip()
+                        trusted_email_list.append(email.strip())
+            logger.info(f"Loaded {len(trusted_emails)} trusted emails from ConfigMap")
+        else:
+            logger.warning("Trusted emails ConfigMap not found - no trusted emails configured")
+        
+        return trusted_emails, trusted_email_list
+    except Exception as e:
+        logger.error(f"Failed to load trusted emails: {e}")
+        return {}, []
+
+# Load trusted emails on startup
+TRUSTED_EMAILS_DICT, TRUSTED_EMAILS = load_trusted_emails()
+
+logger.info(f"Configuration loaded - Admin: {ADMIN_EMAIL}, Mailing URL: {MAILING_SERVICE_URL}")
+
 app = FastAPI(title="lm9dem", description="ABG Migration Dashboard", version="0.1.0")
+
+# Security functions
+def is_internal_ip(ip: str) -> bool:
+    """Check if IP address is from internal network"""
+    if not ip:
+        return False
+    return ip.startswith(("10.", "172.", "192.168.", "127."))
+
+def validate_host_access(host: str, path: str, client_ip: str) -> bool:
+    """Validate access based on host and path"""
+    # Private domains - require internal IP
+    private_domains = [f"backup.{MAIN_DOMAIN}", f"lm9dem.{MAIN_DOMAIN}"]
+    if host in private_domains:
+        return is_internal_ip(client_ip)
+    
+    # Default: allow for now (existing functionality)
+    return True
+
+# Security middleware
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    host = request.headers.get("host", "")
+    path = request.url.path
+    client_ip = request.client.host
+    
+    # Allow health checks from internal IPs (Kubernetes probes) - no logging
+    if path == "/health":
+        response = await call_next(request)
+        return response
+    
+    # Access Level 1: {FULL_ACCESS_LB_IP} - Full access to everything (minimal logging)
+    if host == FULL_ACCESS_LB_IP:
+        # Only log non-routine requests (not API polling)
+        if not path.startswith("/api/"):
+            logger.info(f"Full access via LoadBalancer: ip={client_ip}, path={path}")
+        # No restrictions - allow everything
+        pass
+    
+    # Access Level 2: {BACKUP_ONLY_LB_IP} - Only /backup access with auto-redirect
+    elif host == BACKUP_ONLY_LB_IP:
+        # Auto-redirect root path to /backup
+        if path == "/":
+            logger.info(f"Backup LoadBalancer - redirecting root to /backup: ip={client_ip}")
+            return RedirectResponse(url="/backup", status_code=302)
+        
+        if (path.startswith("/backup") or 
+            path.startswith("/api/backup") or 
+            path.startswith("/api/databases") or 
+            path.startswith("/static/") or 
+            path == "/health"):
+            # Only log page loads, not API polling
+            if not path.startswith("/api/"):
+                logger.info(f"Backup access via LoadBalancer: ip={client_ip}, path={path}")
+            # Allow backup dashboard and required API endpoints
+            pass
+        else:
+            logger.warning(f"Backup LoadBalancer - blocked path: {path}, ip={client_ip}")
+            return Response("Access restricted to backup functionality only", status_code=403, media_type="text/plain")
+    
+    # Access Level 3: {DOWNLOADS_DOMAIN} - Only download access
+    elif host == DOWNLOADS_DOMAIN:
+        # Only allow exact token-based download URLs, nothing else
+        if path.startswith("/downloads/") and len(path) > 11:  # "/downloads/" + token
+            # Validate token format (UUID-like + timestamp)
+            token = path[11:]  # Remove "/downloads/" prefix
+            if len(token) >= 40 and "_" in token:  # Basic token validation
+                # Allow the request to proceed to the download endpoint for validation
+                logger.info(f"Downloads domain access: token={token[:8]}..., ip={client_ip}")
+                pass
+            else:
+                logger.warning(f"Downloads domain - invalid token format: {token[:20]}..., ip={client_ip}")
+                return Response("Invalid download link", status_code=404, media_type="text/plain")
+        else:
+            # Block any other path on downloads domain
+            logger.warning(f"Downloads domain - blocked path: {path}, ip={client_ip}")
+            return Response("Not found", status_code=404, media_type="text/plain")
+    
+    # Any other host - deny access
+    else:
+        logger.warning(f"Access denied - unknown host: host={host}, path={path}, ip={client_ip}")
+        return Response("Access denied", status_code=403, media_type="text/plain")
+    
+    response = await call_next(request)
+    return response
+
+# Ensure downloads directory structure exists with proper permissions
+def ensure_downloads_directories():
+    """Ensure downloads directories exist with proper permissions"""
+    directories = [
+        DOWNLOADS_BASE_PATH,
+        f"{DOWNLOADS_BASE_PATH}/files", 
+        f"{DOWNLOADS_BASE_PATH}/tokens", 
+        f"{DOWNLOADS_BASE_PATH}/jobs"
+    ]
+    
+    for directory in directories:
+        try:
+            os.makedirs(directory, mode=0o755, exist_ok=True)
+            # Verify we can write to the directory
+            test_file = os.path.join(directory, ".write_test")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            logger.info(f"Directory ready: {directory}")
+        except Exception as e:
+            logger.error(f"Failed to setup directory {directory}: {e}")
+            # Don't fail startup, but log the issue
+            
+# Setup downloads directories
+ensure_downloads_directories()
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize application on startup"""
+    logger.info("Starting up application...")
+    ensure_downloads_directories()
+    logger.info("Application startup complete")
 
 # Templates and static files
 templates = Jinja2Templates(directory="templates")
@@ -711,6 +898,11 @@ async def dashboard(request: Request):
     """Main dashboard page"""
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
+@app.get("/backup", response_class=HTMLResponse)
+async def backup_dashboard(request: Request):
+    """Backup management dashboard"""
+    return templates.TemplateResponse("backup-dashboard.html", {"request": request})
+
 @app.get("/sessions", response_class=HTMLResponse)
 async def sessions_page(request: Request):
     """Sessions analytics page"""
@@ -976,7 +1168,14 @@ async def refresh_database_versions(request: Request):
     if not databases:
         return HTMLResponse(content='<p class="text-muted text-center">No databases found</p>')
     
-    return await render_database_table(databases)
+    # Check if request is from backup dashboard via referer
+    referer = request.headers.get("referer", "")
+    is_backup_dashboard = "/backup" in referer or request.headers.get("host") == f"backup.{MAIN_DOMAIN}"
+    
+    if is_backup_dashboard:
+        return await render_backup_database_table(databases)
+    else:
+        return await render_database_table(databases)
 
 async def render_database_table(databases: List[str]) -> HTMLResponse:
     """Render the database table HTML"""
@@ -1037,6 +1236,60 @@ async def render_database_table(databases: List[str]) -> HTMLResponse:
                             hx-target="#operation-result"
                             title="Set to Gamma">γ</button>
                 </div>
+            </td>
+        </tr>
+        '''
+    
+    html += '</tbody></table></div>'
+    return HTMLResponse(content=html)
+
+async def render_backup_database_table(databases: List[str]) -> HTMLResponse:
+    """Render the backup database table HTML with backup actions"""
+    total_databases = len(databases)
+    html = f'''<div class="table-responsive">
+    <div class="mb-2">
+        <small class="text-muted">Last Discovery: {get_last_discovery_time()} | Total Databases: {total_databases}</small>
+    </div>
+    <table class="table table-striped table-hover">'''
+    html += '''
+    <thead class="table-dark">
+        <tr>
+            <th>Database</th>
+            <th>Company</th>
+            <th>Version</th>
+            <th>Last Updated</th>
+            <th>Backup Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+    '''
+    
+    for db in databases:
+        version = redis_helper.get(f"db_version:{db}")
+        updated = redis_helper.get(f"db_updated:{db}")
+        company_name = redis_helper.get_company_name(db)
+        
+        version = version or "alpha"
+        updated = updated or "Never"
+        
+        version_class = {
+            "alpha": "primary",
+            "beta": "warning", 
+            "gamma": "danger"
+        }.get(version, "secondary")
+        
+        html += f'''
+        <tr>
+            <td><strong>{db}</strong></td>
+            <td><span class="text-primary">{company_name}</span></td>
+            <td><span class="badge bg-{version_class}">{version.upper()}</span></td>
+            <td class="text-muted">{updated.split('T')[0] if 'T' in updated else updated}</td>
+            <td>
+                <button class="btn btn-success btn-sm backup-btn" 
+                        onclick="triggerBackup('{db}')"
+                        title="Backup Database">
+                    <i class="bi bi-cloud-download"></i> Backup
+                </button>
             </td>
         </tr>
         '''
@@ -1166,11 +1419,16 @@ async def discover_companies():
         import os
         
         # Path to the company discovery script
-        script_path = "/app/scripts/discover_companies_direct.sh"
+        script_path = DISCOVERY_SCRIPT_PATH
         
-        # Check if script exists, if not, use the one from the repo
+        # Check if script exists
         if not os.path.exists(script_path):
-            script_path = "/home/experio/system-ns/lm9dem/scripts/discover_companies_direct.sh"
+            error_msg = f"Discovery script not found: {script_path}"
+            logger.error(error_msg)
+            return {
+                "status": "error", 
+                "message": error_msg
+            }
         
         logger.info("Starting company name discovery...")
         
@@ -1242,7 +1500,7 @@ async def get_migrations():
         import re
         from datetime import datetime
         
-        logs_path = "/ceph/data/infra/odoo/system-fs/alpha-beta-gamma"
+        logs_path = f"{CEPH_DATA_PATH}/infra/odoo/system-fs/alpha-beta-gamma"
         
         if not os.path.exists(logs_path):
             return {"migrations": []}
@@ -1317,7 +1575,7 @@ async def get_migration_logs(migration_id: str):
     try:
         import os
         
-        migration_path = f"/ceph/data/infra/odoo/system-fs/alpha-beta-gamma/{migration_id}"
+        migration_path = f"{CEPH_DATA_PATH}/infra/odoo/system-fs/alpha-beta-gamma/{migration_id}"
         
         if not os.path.exists(migration_path):
             raise HTTPException(status_code=404, detail="Migration not found")
@@ -1386,7 +1644,7 @@ async def get_log_content(migration_id: str, log_filename: str):
         if not log_filename.endswith('.log') or '/' in log_filename or '..' in log_filename:
             raise HTTPException(status_code=400, detail="Invalid log filename")
         
-        log_path = f"/ceph/data/infra/odoo/system-fs/alpha-beta-gamma/{migration_id}/{log_filename}"
+        log_path = f"{CEPH_DATA_PATH}/infra/odoo/system-fs/alpha-beta-gamma/{migration_id}/{log_filename}"
         
         if not os.path.exists(log_path):
             raise HTTPException(status_code=404, detail="Log file not found")
@@ -1443,7 +1701,7 @@ async def trigger_deployment(request: Request):
             }
         
         try:
-            cmd = 'ssh -o StrictHostKeyChecking=no experio@10.10.10.40 "/home/experio/workspace/Watcher/auto-deploy/check-and-deploy.sh"'
+            cmd = f'ssh -o StrictHostKeyChecking=no {SSH_USERNAME}@{DEPLOYMENT_SERVER_IP} "/home/experio/workspace/Watcher/auto-deploy/check-and-deploy.sh"'
             
             # Execute command with real-time output capture
             process = subprocess.Popen(
@@ -1571,6 +1829,426 @@ async def trigger_deployment(request: Request):
         }
         redis_helper.finish_deployment(result_data)
         return result_data
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# BACKUP SYSTEM ENDPOINTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def generate_download_token() -> str:
+    """Generate secure download token with expiration"""
+    token_id = str(uuid.uuid4())
+    expiry = int(time.time()) + (6 * 3600)  # 6 hours from now
+    return f"{token_id}_{expiry}"
+
+def validate_download_token(token: str) -> bool:
+    """Validate download token and check expiration"""
+    try:
+        token_id, expiry_str = token.split('_')
+        expiry = int(expiry_str)
+        return time.time() < expiry
+    except (ValueError, IndexError):
+        return False
+
+def load_token_data(token: str) -> Optional[dict]:
+    """Load token metadata from filesystem"""
+    try:
+        token_file = f"/app/downloads/tokens/{token}.json"
+        if os.path.exists(token_file):
+            with open(token_file, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load token data: {e}")
+    return None
+
+def save_token_data(token: str, data: dict) -> bool:
+    """Save token metadata to filesystem"""
+    try:
+        token_file = f"{TOKENS_PATH}/{token}.json"
+        with open(token_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save token data: {e}")
+        return False
+
+def load_backup_jobs() -> list:
+    """Load backup jobs from filesystem"""
+    try:
+        jobs_file = f"{DOWNLOADS_BASE_PATH}/jobs/jobs.json"
+        if os.path.exists(jobs_file):
+            with open(jobs_file, 'r') as f:
+                return json.load(f)
+        else:
+            # Create empty jobs file if it doesn't exist
+            logger.info("Creating new jobs.json file")
+            return []
+    except Exception as e:
+        logger.error(f"Failed to load backup jobs: {e}")
+    return []
+
+def save_backup_jobs(jobs: list) -> bool:
+    """Save backup jobs to filesystem"""
+    try:
+        jobs_dir = f"{DOWNLOADS_BASE_PATH}/jobs"
+        jobs_file = f"{jobs_dir}/jobs.json"
+        
+        # Ensure jobs directory exists
+        os.makedirs(jobs_dir, mode=0o755, exist_ok=True)
+        
+        with open(jobs_file, 'w') as f:
+            json.dump(jobs, f, indent=2)
+        
+        logger.info(f"Saved {len(jobs)} backup jobs to {jobs_file}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save backup jobs: {e}")
+        return False
+
+@app.get("/downloads/{token}")
+async def download_backup_file(token: str, request: Request):
+    """Public download endpoint for backup files"""
+    # Validate token format and expiration
+    if not validate_download_token(token):
+        raise HTTPException(status_code=410, detail="Download link expired or invalid")
+    
+    # Load token data
+    token_data = load_token_data(token)
+    if not token_data:
+        raise HTTPException(status_code=404, detail="Download not found")
+    
+    # Check if file exists
+    file_path = token_data.get("file_path", "")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Get file info
+    database = token_data.get("database", "unknown")
+    filename = token_data.get("filename", os.path.basename(file_path))
+    
+    # Log download attempt
+    client_ip = request.client.host
+    logger.info(f"Download request: database={database}, file={filename}, ip={client_ip}, token={token[:8]}...")
+    
+    # Return file with proper headers
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{filename}\"",
+            "X-Database": database
+        }
+    )
+
+@app.post("/api/backup/trigger")
+async def trigger_backup(request: Request):
+    """Trigger backup job for a database"""
+    try:
+        data = await request.json()
+        database = data.get("database", "").strip()
+        email = data.get("email", "").strip()
+        
+        # Validate inputs
+        if not database:
+            raise HTTPException(status_code=400, detail="Database name is required")
+        
+        if not email or email not in TRUSTED_EMAILS:
+            raise HTTPException(status_code=400, detail="Invalid or untrusted email address")
+        
+        # Generate job ID
+        job_id = f"backup_{database}_{int(time.time())}"
+        
+        # Load existing jobs
+        jobs = load_backup_jobs()
+        
+        # Check for existing running backup of same database
+        existing_job = next((job for job in jobs 
+                           if job["database"] == database and job["status"] == "running"), None)
+        
+        if existing_job:
+            return {
+                "success": False,
+                "message": f"Backup already running for {database}",
+                "existing_job_id": existing_job["id"]
+            }
+        
+        # Create new job entry
+        new_job = {
+            "id": job_id,
+            "database": database,
+            "email": email,
+            "status": "running",
+            "created": datetime.now().isoformat(),
+            "updated": datetime.now().isoformat(),
+            "progress": "Initializing backup..."
+        }
+        
+        jobs.append(new_job)
+        save_backup_jobs(jobs)
+        
+        logger.info(f"Backup job started: {job_id}, database={database}, email={email}")
+        
+        # Start background backup process
+        import asyncio
+        import sys
+        import os
+        
+        # Add scripts directory to Python path
+        scripts_path = os.path.join(os.path.dirname(__file__), 'scripts')
+        if scripts_path not in sys.path:
+            sys.path.append(scripts_path)
+        
+        try:
+            from scripts.backup_manager import backup_manager
+            # Start backup in background
+            asyncio.create_task(backup_manager.execute_backup(job_id, database, email))
+        except ImportError as e:
+            logger.error(f"Failed to import backup_manager: {e}")
+            # Update job status to failed
+            for job in jobs:
+                if job["id"] == job_id:
+                    job["status"] = "failed"
+                    job["error"] = "Backup system not properly configured"
+                    job["progress"] = "System error"
+                    break
+            save_backup_jobs(jobs)
+            
+            return {
+                "success": False,
+                "message": "Backup system not available",
+                "job_id": job_id
+            }
+        
+        return {
+            "success": True,
+            "message": f"Backup job started for {database}",
+            "job_id": job_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to trigger backup: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start backup: {str(e)}")
+
+@app.get("/api/backup/emails")
+async def get_trusted_emails():
+    """Get trusted email addresses with names"""
+    return {"trusted_emails": TRUSTED_EMAILS_DICT}
+
+@app.get("/api/backup/jobs", response_class=HTMLResponse)
+async def get_backup_jobs():
+    """Get backup jobs status as HTML"""
+    jobs = load_backup_jobs()
+    
+    if not jobs:
+        return HTMLResponse("""
+            <div class="text-center text-muted">
+                <i class="bi bi-inbox"></i>
+                <p class="mt-2">No backup jobs yet</p>
+                <small>Trigger a backup to see job status here</small>
+            </div>
+        """)
+    
+    # Sort jobs by creation date (newest first)
+    jobs.sort(key=lambda x: x.get("created", ""), reverse=True)
+    
+    html = '<div class="table-responsive">'
+    html += '''
+    <table class="table table-striped table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>Database</th>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+    '''
+    
+    for job in jobs[:10]:  # Show last 10 jobs
+        status = job.get("status", "unknown")
+        status_class = {
+            "running": "warning",
+            "completed": "success", 
+            "failed": "danger"
+        }.get(status, "secondary")
+        
+        status_icon = {
+            "running": "clock",
+            "completed": "check-circle",
+            "failed": "exclamation-triangle"
+        }.get(status, "question-circle")
+        
+        created_date = job.get("created", "")
+        if created_date:
+            try:
+                created_dt = datetime.fromisoformat(created_date.replace('Z', '+00:00'))
+                created_str = created_dt.strftime("%Y-%m-%d %H:%M")
+            except:
+                created_str = created_date
+        else:
+            created_str = "Unknown"
+        
+        progress = job.get("progress", "No details")
+        email = job.get("email", "Unknown")
+        
+        html += f'''
+        <tr>
+            <td><strong>{job.get("database", "Unknown")}</strong></td>
+            <td><small>{email}</small></td>
+            <td><span class="badge bg-{status_class}"><i class="bi bi-{status_icon}"></i> {status.upper()}</span></td>
+            <td><small>{progress}</small></td>
+            <td><small>{created_str}</small></td>
+            <td>
+        '''
+        
+        if status == "completed" and job.get("download_token"):
+            html += f'<a href="/downloads/{job["download_token"]}" class="btn btn-sm btn-outline-primary me-1" title="Download"><i class="bi bi-download"></i></a>'
+        elif status == "running":
+            html += '<span class="spinner-border spinner-border-sm me-1" role="status"></span>'
+        elif status == "failed":
+            html += f'<button class="btn btn-sm btn-outline-danger me-1" title="View Error" onclick="alert(\'{job.get("error", "Unknown error")}\')"><i class="bi bi-exclamation-triangle"></i></button>'
+        
+        # Add delete button for all jobs
+        html += f'''<button class="btn btn-sm btn-outline-danger" 
+                            title="Delete backup" 
+                            hx-delete="/api/backup/jobs/{job['id']}" 
+                            hx-trigger="click"
+                            hx-target="closest #backup-jobs"
+                            hx-swap="innerHTML"
+                            hx-confirm="Are you sure you want to delete this backup job and its files?"
+                            hx-indicator="#backup-jobs">
+                        <i class="bi bi-trash"></i>
+                    </button>'''
+        
+        html += '''
+            </td>
+        </tr>
+        '''
+    
+    html += '</tbody></table></div>'
+    
+    return HTMLResponse(content=html)
+
+@app.delete("/api/backup/jobs/{job_id}", response_class=HTMLResponse)
+async def delete_backup_job(job_id: str):
+    """Delete a backup job and its associated files"""
+    try:
+        jobs = load_backup_jobs()
+        job_to_delete = None
+        
+        # Find the job to delete
+        for job in jobs:
+            if job["id"] == job_id:
+                job_to_delete = job
+                break
+        
+        if not job_to_delete:
+            logger.warning(f"Backup job not found for deletion: {job_id}")
+            # Return updated jobs list
+            return await get_backup_jobs()
+        
+        # Delete associated files
+        deleted_files = []
+        
+        # Delete token file if exists
+        if job_to_delete.get("download_token"):
+            token_file = f"{TOKENS_PATH}/{job_to_delete['download_token']}.json"
+            if os.path.exists(token_file):
+                try:
+                    os.remove(token_file)
+                    deleted_files.append("token file")
+                    logger.info(f"Deleted token file: {token_file}")
+                except Exception as e:
+                    logger.error(f"Failed to delete token file {token_file}: {e}")
+        
+        # Delete dump file if exists (try multiple approaches)
+        dump_file_deleted = False
+        
+        # Approach 1: Try to get file path from token data
+        if job_to_delete.get("download_token"):
+            token_data = load_token_data(job_to_delete["download_token"])
+            if token_data and token_data.get("file_path"):
+                dump_file = token_data["file_path"]
+                if os.path.exists(dump_file):
+                    try:
+                        os.remove(dump_file)
+                        deleted_files.append("dump file (from token)")
+                        dump_file_deleted = True
+                        logger.info(f"Deleted dump file from token data: {dump_file}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete dump file {dump_file}: {e}")
+        
+        # Approach 2: If token approach failed, try to construct file path from job data
+        if not dump_file_deleted and job_to_delete.get("database"):
+            database = job_to_delete["database"]
+            files_dir = f"{DOWNLOADS_BASE_PATH}/files"
+            
+            # Look for files matching the database name pattern
+            if os.path.exists(files_dir):
+                try:
+                    import glob
+                    # Pattern: database_YYYYMMDD_HHMMSS.dump
+                    pattern = f"{files_dir}/{database}_*.dump"
+                    matching_files = glob.glob(pattern)
+                    
+                    # Find the file that matches the job creation time approximately
+                    job_created = job_to_delete.get("created", "")
+                    for file_path in matching_files:
+                        try:
+                            file_stat = os.stat(file_path)
+                            file_time = datetime.fromtimestamp(file_stat.st_mtime).isoformat()
+                            
+                            # If job was created recently (within 1 hour of file modification)
+                            if job_created:
+                                job_dt = datetime.fromisoformat(job_created.replace('Z', '+00:00'))
+                                file_dt = datetime.fromtimestamp(file_stat.st_mtime)
+                                time_diff = abs((job_dt - file_dt).total_seconds())
+                                
+                                if time_diff < 3600:  # Within 1 hour
+                                    os.remove(file_path)
+                                    deleted_files.append(f"dump file (pattern match): {os.path.basename(file_path)}")
+                                    dump_file_deleted = True
+                                    logger.info(f"Deleted dump file by pattern: {file_path}")
+                                    break
+                        except Exception as e:
+                            logger.warning(f"Error processing file {file_path}: {e}")
+                            continue
+                            
+                    # If still no file deleted and there's only one matching file, delete it
+                    if not dump_file_deleted and len(matching_files) == 1:
+                        try:
+                            os.remove(matching_files[0])
+                            deleted_files.append(f"dump file (single match): {os.path.basename(matching_files[0])}")
+                            dump_file_deleted = True
+                            logger.info(f"Deleted single matching dump file: {matching_files[0]}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete single matching file {matching_files[0]}: {e}")
+                            
+                except Exception as e:
+                    logger.error(f"Failed to search for dump files: {e}")
+        
+        if not dump_file_deleted:
+            logger.warning(f"Could not locate dump file for deletion: job_id={job_id}, database={job_to_delete.get('database', 'unknown')}")
+        
+        # Remove job from jobs list
+        jobs = [job for job in jobs if job["id"] != job_id]
+        save_backup_jobs(jobs)
+        
+        logger.info(f"Deleted backup job {job_id} (database: {job_to_delete.get('database', 'unknown')})")
+        if deleted_files:
+            logger.info(f"Also deleted: {', '.join(deleted_files)}")
+        
+        # Return updated jobs list with the same structure as get_backup_jobs
+        return await get_backup_jobs()
+        
+    except Exception as e:
+        logger.error(f"Failed to delete backup job {job_id}: {e}")
+        # Return current jobs list even if deletion failed
+        return await get_backup_jobs()
 
 @app.get("/health")
 async def health_check():
@@ -1581,6 +2259,40 @@ async def health_check():
         "redis": "connected" if redis_ok else "disconnected",
         "timestamp": datetime.now().isoformat()
     }
+
+@app.get("/test-permissions")
+async def test_permissions():
+    """Test endpoint to verify filesystem permissions"""
+    results = {}
+    
+    # Test downloads directory structure
+    base_dir = DOWNLOADS_BASE_PATH
+    subdirs = ["files", "tokens", "jobs"]
+    
+    for subdir in subdirs:
+        dir_path = f"{base_dir}/{subdir}"
+        try:
+            # Check if directory exists
+            exists = os.path.exists(dir_path)
+            results[f"{subdir}_exists"] = exists
+            
+            if exists:
+                # Check if writable
+                test_file = f"{dir_path}/test_write_{int(time.time())}.tmp"
+                try:
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    results[f"{subdir}_writable"] = True
+                except Exception as e:
+                    results[f"{subdir}_writable"] = False
+                    results[f"{subdir}_error"] = str(e)
+            else:
+                results[f"{subdir}_writable"] = False
+        except Exception as e:
+            results[f"{subdir}_error"] = str(e)
+    
+    return {"status": "test complete", "results": results}
 
 if __name__ == "__main__":
     import uvicorn

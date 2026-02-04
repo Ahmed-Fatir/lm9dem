@@ -17,6 +17,25 @@ spec:
     app: lm9dem
   type: LoadBalancer
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lm9dem-backup
+  namespace: system-experio
+  labels:
+    app: lm9dem
+    component: backup-only
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: "10.10.10.55"
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+  selector:
+    app: lm9dem
+  type: LoadBalancer
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,10 +58,19 @@ spec:
       imagePullSecrets:
         - name: experio-registry-secret
       serviceAccountName: system-update-sa
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
         - name: lm9dem
           image: registry.experioservices.com/lm9dem:latest
           imagePullPolicy: Always
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
           ports:
             - containerPort: 8080
               name: http
@@ -57,6 +85,13 @@ spec:
               value: "system-experio"
             - name: INGRESS
               value: "system-ingress"
+          envFrom:
+            # Load all configuration from ConfigMap
+            - configMapRef:
+                name: lm9dem-config
+            # Load all secrets
+            - secretRef:
+                name: lm9dem-secrets
           resources:
             requests:
               memory: "128Mi"
@@ -67,6 +102,11 @@ spec:
           volumeMounts:
             - name: ceph-logs
               mountPath: /ceph/data/infra/odoo/system-fs/alpha-beta-gamma
+              readOnly: true
+            - name: downloads
+              mountPath: /app/downloads
+            - name: trusted-emails
+              mountPath: /app/config/emails
               readOnly: true
           readinessProbe:
             httpGet:
@@ -89,3 +129,10 @@ spec:
           hostPath:
             path: /ceph/data/infra/odoo/system-fs/alpha-beta-gamma
             type: Directory
+        - name: downloads
+          hostPath:
+            path: /ceph/data/infra/microservices/lm9dem/downloads
+            type: DirectoryOrCreate
+        - name: trusted-emails
+          configMap:
+            name: trusted-emails

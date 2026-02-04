@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lm9dem-config
+  namespace: system-experio
+data:
+  # Email Configuration
+  ADMIN_EMAIL: "a.fatir@experio.ma"
+  MAILING_SERVICE_URL: "https://mailing.experioservices.com/save"
+  
+  # LoadBalancer IPs
+  FULL_ACCESS_LB_IP: "10.10.10.54"
+  BACKUP_ONLY_LB_IP: "10.10.10.55"
+  
+  # Deployment Server (use the working host from v2-backup.sh)
+  DEPLOYMENT_SERVER_IP: "10.10.10.20"
+  
+  # Domain Configuration
+  MAIN_DOMAIN: "experioservices.com"
+  DOWNLOADS_DOMAIN: "downloads.experioservices.com"
+  MAILING_DOMAIN: "mailing.experioservices.com"
+  
+  # Ceph Storage Paths
+  CEPH_DATA_PATH: "/ceph/data"
+  CEPH_BACKUP_PATH: "/ceph/data/infra/microservices/lm9dem"
+  DOWNLOADS_BASE_PATH: "/app/downloads"
+  TOKENS_PATH: "/app/downloads/tokens"
+  
+  # Script Paths
+  BACKUP_SCRIPT_PATH: "/home/experio/system-ns/scripts/backup-one-db.sh"
+  DISCOVERY_SCRIPT_PATH: "/home/experio/system-ns/lm9dem/scripts/discover_companies_direct.sh"
+  
+  # Script Configuration
+  NAMESPACE: "system-experio"
+  CNPG_CONTAINER: "postgres"
+  APP_SELECTOR: "system-alpha"
+  CNPG_CLUSTER_NAME: "system"
+  
+  # Remote Backup Configuration
+  REMOTE_BACKUP_DIR: "/ceph/data/infra/bakups/system-bakups"
+  REMOTE_SCRIPT_DIR: "/home/experio/Experio/system-ns/scripts"
+  
+  # SSH Configuration
+  SSH_USERNAME: "experio"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lm9dem-secrets
+  namespace: system-experio
+type: Opaque
+data:
+  # Base64 encoded: echo -n "87944d55230fca51ccb049e32cc1c2c79120467c66b4a08504eb2caa3e082ac9" | base64
+  MAILING_TOKEN: ODc5NDRkNTUyMzBmY2E1MWNjYjA0OWUzMmNjMWMyYzc5MTIwNDY3YzY2YjRhMDg1MDRlYjJjYWEzZTA4MmFjOQ==

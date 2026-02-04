@@ -4,9 +4,11 @@
 
 set -e
 
-# Configuration
-NAMESPACE="system-experio"
-CNPG_CONTAINER="postgres"
+# Configuration from environment (NO DEFAULTS)
+NAMESPACE="${NAMESPACE:?NAMESPACE environment variable is required}"
+CNPG_CONTAINER="${CNPG_CONTAINER:?CNPG_CONTAINER environment variable is required}"
+APP_SELECTOR="${APP_SELECTOR:?APP_SELECTOR environment variable is required}"
+CNPG_CLUSTER_NAME="${CNPG_CLUSTER_NAME:?CNPG_CLUSTER_NAME environment variable is required}"
 
 # Function to get CNPG replica pod
 get_cnpg_replica_pod() {
@@ -20,7 +22,7 @@ get_cnpg_replica_pod() {
     fi
     
     # Fallback to any CNPG pod if no replica found
-    cnpg_pod=$(kubectl get pods -n "$NAMESPACE" -l "cnpg.io/cluster=system" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    cnpg_pod=$(kubectl get pods -n "$NAMESPACE" -l "cnpg.io/cluster=$CNPG_CLUSTER_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     
     if [ -n "$cnpg_pod" ]; then
         log "Using CNPG pod: $cnpg_pod"
@@ -70,7 +72,7 @@ discover_databases_from_app() {
     log "Discovering databases from app pod..."
     
     # Get an app pod name
-    app_pod=$(kubectl get pods -n "$NAMESPACE" -l app=system-alpha -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    app_pod=$(kubectl get pods -n "$NAMESPACE" -l "app=$APP_SELECTOR" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     
     if [ -z "$app_pod" ]; then
         log "❌ No app pod found"
