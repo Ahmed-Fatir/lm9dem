@@ -68,9 +68,6 @@ spec:
             - name: ceph-logs
               mountPath: /ceph/data/infra/odoo/system-fs/alpha-beta-gamma
               readOnly: true
-            - name: ssh-keys
-              mountPath: /home/appuser/.ssh
-              readOnly: true
           readinessProbe:
             httpGet:
               path: /health
@@ -91,8 +88,4 @@ spec:
         - name: ceph-logs
           hostPath:
             path: /ceph/data/infra/odoo/system-fs/alpha-beta-gamma
-            type: Directory
-        - name: ssh-keys
-          hostPath:
-            path: /home/experio/.ssh
             type: Directory
