@@ -40,8 +40,3 @@ kubectl rollout status deployment/lm9dem -n ${NAMESPACE} --timeout=300s
 echo ""
 echo -e "${GREEN}✅ lm9dem deployed successfully!${NC}"
 echo ""
-echo "Access the dashboard:"
-echo "  Port forward: kubectl port-forward -n ${NAMESPACE} service/lm9dem 8080:8080"
-echo "  Then visit: http://localhost:8080"
-echo ""
-echo "Or add to ingress to access via domain."
