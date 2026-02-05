@@ -40,6 +40,10 @@ class BackupManager:
         self.admin_email = os.environ.get('ADMIN_EMAIL')
         self.downloads_domain = os.environ.get('DOWNLOADS_DOMAIN')
         
+        # Cleanup scheduler status
+        self.cleanup_scheduler_running = False
+        self.last_cleanup_time = None
+        
         # Validate required configuration
         if not self.mailing_service_url:
             raise RuntimeError("CRITICAL: MAILING_SERVICE_URL environment variable is required")
@@ -319,6 +323,7 @@ exit 1
         """Clean up expired files and tokens"""
         try:
             current_time = time.time()
+            self.last_cleanup_time = datetime.now()
             cleaned_files = 0
             
             # Clean up expired token files
@@ -330,18 +335,19 @@ exit 1
                         expiry = int(expiry_str)
                         
                         if current_time > expiry:
-                            # Remove token file
-                            os.remove(f"{self.tokens_dir}/{token_file}")
-                            
-                            # Try to remove associated backup file
+                            # First, try to remove associated backup file before removing token
                             try:
                                 with open(f"{self.tokens_dir}/{token_file}", 'r') as f:
                                     token_data = json.load(f)
                                     file_path = token_data.get("file_path", "")
                                     if file_path and os.path.exists(file_path):
                                         os.remove(file_path)
-                            except:
-                                pass
+                                        logger.info(f"Removed expired backup file: {file_path}")
+                            except Exception as e:
+                                logger.warning(f"Could not remove backup file for token {token}: {e}")
+                            
+                            # Then remove token file
+                            os.remove(f"{self.tokens_dir}/{token_file}")
                             
                             cleaned_files += 1
                             logger.info(f"Cleaned up expired token: {token}")
@@ -350,9 +356,39 @@ exit 1
             
             if cleaned_files > 0:
                 logger.info(f"Cleanup completed: removed {cleaned_files} expired files")
+            else:
+                logger.debug("Cleanup completed: no expired files found")
         
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")
+            
+    def get_cleanup_status(self):
+        """Get cleanup scheduler status"""
+        return {
+            "scheduler_running": self.cleanup_scheduler_running,
+            "last_cleanup_time": self.last_cleanup_time.isoformat() if self.last_cleanup_time else None,
+            "next_cleanup_in_minutes": 60 if self.cleanup_scheduler_running else None
+        }
+
+    async def start_cleanup_scheduler(self):
+        """Start periodic cleanup of expired files"""
+        try:
+            self.cleanup_scheduler_running = True
+            logger.info("Starting cleanup scheduler - runs every hour")
+            
+            while True:
+                try:
+                    await asyncio.sleep(3600)  # Run every hour
+                    await self.cleanup_expired_files()
+                except Exception as e:
+                    logger.error(f"Cleanup scheduler error: {e}")
+                    await asyncio.sleep(300)  # Wait 5 minutes on error
+        except Exception as e:
+            logger.error(f"Cleanup scheduler failed to start: {e}")
+            self.cleanup_scheduler_running = False
+        finally:
+            logger.warning("Cleanup scheduler has stopped")
+            self.cleanup_scheduler_running = False
 
 # Global backup manager instance
 backup_manager = BackupManager()

@@ -17,6 +17,7 @@ import pickle
 import base64
 import uuid
 import time
+import asyncio
 from urllib.parse import quote
 from typing import Dict, List, Optional
 from pydantic import BaseModel
@@ -219,6 +220,28 @@ async def startup_event():
     """Initialize application on startup"""
     logger.info("Starting up application...")
     ensure_downloads_directories()
+    
+    # Start cleanup scheduler
+    try:
+        # Import backup manager and start cleanup scheduler
+        import sys
+        scripts_path = os.path.join(os.path.dirname(__file__), 'scripts')
+        if scripts_path not in sys.path:
+            sys.path.append(scripts_path)
+        from scripts.backup_manager import backup_manager
+        
+        # Run initial cleanup
+        await backup_manager.cleanup_expired_files()
+        logger.info("Initial cleanup completed")
+        
+        # Start background scheduler
+        asyncio.create_task(backup_manager.start_cleanup_scheduler())
+        logger.info("Started background cleanup scheduler")
+    except Exception as e:
+        logger.error(f"Failed to start cleanup scheduler: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+    
     logger.info("Application startup complete")
 
 # Templates and static files
@@ -2430,6 +2453,117 @@ async def health_check():
         "redis": "connected" if redis_ok else "disconnected",
         "timestamp": datetime.now().isoformat()
     }
+
+@app.get("/api/backup/cleanup/status")
+async def get_cleanup_status():
+    """Get backup cleanup scheduler status"""
+    try:
+        # Import backup manager
+        import sys
+        scripts_path = os.path.join(os.path.dirname(__file__), 'scripts')
+        if scripts_path not in sys.path:
+            sys.path.append(scripts_path)
+        from scripts.backup_manager import backup_manager
+        
+        status = backup_manager.get_cleanup_status()
+        
+        # Add file counts for additional info
+        token_count = 0
+        backup_count = 0
+        
+        try:
+            if os.path.exists(backup_manager.tokens_dir):
+                token_count = len([f for f in os.listdir(backup_manager.tokens_dir) if f.endswith('.json')])
+            if os.path.exists(backup_manager.files_dir):
+                backup_count = len([f for f in os.listdir(backup_manager.files_dir) if f.endswith('.dump')])
+        except Exception as e:
+            logger.warning(f"Could not count files: {e}")
+        
+        status.update({
+            "active_tokens": token_count,
+            "backup_files": backup_count
+        })
+        
+        return status
+        
+    except Exception as e:
+        logger.error(f"Failed to get cleanup status: {e}")
+        return {
+            "scheduler_running": False,
+            "error": str(e),
+            "last_cleanup_time": None
+        }
+
+@app.post("/api/backup/cleanup/run")
+async def run_cleanup_now():
+    """Manually trigger cleanup of expired files"""
+    try:
+        import sys
+        scripts_path = os.path.join(os.path.dirname(__file__), 'scripts')
+        if scripts_path not in sys.path:
+            sys.path.append(scripts_path)
+        from scripts.backup_manager import backup_manager
+        
+        # Run cleanup immediately
+        await backup_manager.cleanup_expired_files()
+        
+        # Get updated status
+        status = backup_manager.get_cleanup_status()
+        token_count = len([f for f in os.listdir(backup_manager.tokens_dir) if f.endswith('.json')])
+        backup_count = len([f for f in os.listdir(backup_manager.files_dir) if f.endswith('.dump')])
+        
+        return {
+            "success": True,
+            "message": "Manual cleanup completed",
+            "scheduler_running": status["scheduler_running"],
+            "last_cleanup_time": status["last_cleanup_time"],
+            "active_tokens": token_count,
+            "backup_files": backup_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to run manual cleanup: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.post("/api/backup/cleanup/restart")
+async def restart_cleanup_scheduler():
+    """Restart the cleanup scheduler"""
+    try:
+        import sys
+        scripts_path = os.path.join(os.path.dirname(__file__), 'scripts')
+        if scripts_path not in sys.path:
+            sys.path.append(scripts_path)
+        from scripts.backup_manager import backup_manager
+        
+        # Check if already running
+        if backup_manager.cleanup_scheduler_running:
+            return {
+                "success": False,
+                "message": "Scheduler is already running",
+                "scheduler_running": True
+            }
+        
+        # Start the scheduler
+        asyncio.create_task(backup_manager.start_cleanup_scheduler())
+        
+        # Wait a moment for it to initialize
+        await asyncio.sleep(1)
+        
+        return {
+            "success": True,
+            "message": "Cleanup scheduler restarted",
+            "scheduler_running": backup_manager.cleanup_scheduler_running
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to restart cleanup scheduler: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 @app.get("/test-permissions")
 async def test_permissions():
