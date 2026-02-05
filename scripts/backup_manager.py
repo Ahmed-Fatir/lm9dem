@@ -173,7 +173,7 @@ class BackupManager:
             self.update_job_status(job_id, "running", "Starting backup process...")
             
             # Generate timestamped filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             dump_filename = f"{database}_{timestamp}.dump"
             local_dump_path = f"{self.files_dir}/{dump_filename}"
             
@@ -266,7 +266,7 @@ class BackupManager:
 <p><strong>Download Link:</strong> <a href="{download_url}">{download_url}</a></p>
 <br>
 <p><em>Note: This download link will expire in 6 hours.</em></p>
-<p><em>Backup completed at: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</em></p>
+<p><em>Backup completed at: {datetime.now().strftime("%d/%m/%y %H:%M:%S")}</em></p>
             """
             
             await self.send_email(user_email, subject, body)
@@ -287,7 +287,7 @@ class BackupManager:
 <p><strong>Job ID:</strong> {job_id}</p>
 <p><strong>Error:</strong> {str(e)}</p>
 <br>
-<p><em>Failed at: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</em></p>
+<p><em>Failed at: {datetime.now().strftime("%d/%m/%y %H:%M:%S")}</em></p>
             """
             
             await self.send_email(self.admin_email, subject, body)

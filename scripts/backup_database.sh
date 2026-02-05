@@ -17,7 +17,7 @@ echo "Starting backup for database: $DATABASE"
 echo "Output path: $OUTPUT_PATH"
 
 # Configuration from environment (NO DEFAULTS - FAIL FAST)
-REMOTE_HOST="${DEPLOYMENT_SERVER_IP:?DEPLOYMENT_SERVER_IP environment variable is required}"
+REMOTE_HOST="${CP_SERVER_IP:?CP_SERVER_IP environment variable is required}"
 REMOTE_USER="${SSH_USERNAME:?SSH_USERNAME environment variable is required}"
 REMOTE_BACKUP_DIR="${REMOTE_BACKUP_DIR:?REMOTE_BACKUP_DIR environment variable is required}"
 REMOTE_SCRIPT_DIR="${REMOTE_SCRIPT_DIR:?REMOTE_SCRIPT_DIR environment variable is required}"

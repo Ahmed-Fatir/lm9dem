@@ -12,8 +12,9 @@ data:
   FULL_ACCESS_LB_IP: "10.10.10.54"
   BACKUP_ONLY_LB_IP: "10.10.10.55"
   
-  # Deployment Server (use the working host from v2-backup.sh)
-  DEPLOYMENT_SERVER_IP: "10.10.10.20"
+  # Deployment Servers
+  CP_SERVER_IP: "10.10.10.20"
+  MS_SERVER_IP: "10.10.10.40"
   
   # Domain Configuration
   MAIN_DOMAIN: "experioservices.com"

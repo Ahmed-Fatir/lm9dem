@@ -132,7 +132,7 @@
                     <div class="card-body">
                         <div id="backup-jobs" 
                              hx-get="/api/backup/jobs" 
-                             hx-trigger="load, every 10s" 
+                             hx-trigger="load, every 10s, refresh" 
                              hx-target="this" 
                              hx-swap="innerHTML">
                             <div class="text-center">
@@ -219,7 +219,7 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <p>Select the email address where the download link will be sent:</p>
+                    <p id="modal-description">Select the email address where the download link will be sent:</p>
                     <div id="email-options">
                         <!-- Email options will be populated by JavaScript -->
                     </div>
@@ -229,7 +229,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-success" onclick="confirmBackup()">
+                    <button type="button" class="btn btn-primary" id="modal-action-btn" onclick="confirmBackup()">
                         <i class="bi bi-cloud-download"></i> Start Backup
                     </button>
                 </div>
@@ -250,6 +250,7 @@
         // Global variables for backup operation
         let selectedDatabase = '';
         let selectedEmail = '';
+        let selectedJobId = '';
         let trustedEmailsData = {};
 
         // Fetch trusted emails from API
@@ -268,7 +269,12 @@
         // Backup trigger function (called from database table)
         function triggerBackup(databaseName) {
             selectedDatabase = databaseName;
+            selectedJobId = ''; // Clear job ID for new backup
             document.getElementById('selected-database').textContent = databaseName;
+            
+            // Update modal for backup
+            document.getElementById('emailModalLabel').innerHTML = '<i class="bi bi-envelope"></i> Select Email for Download Link';
+            document.getElementById('modal-description').textContent = 'Select the email address where the download link will be sent:';
             
             // Populate email options
             const emailOptions = document.getElementById('email-options');
@@ -287,6 +293,11 @@
                 `;
                 emailOptions.innerHTML += radioHtml;
             });
+            
+            // Update action button for backup
+            const actionBtn = document.getElementById('modal-action-btn');
+            actionBtn.innerHTML = '<i class="bi bi-cloud-download"></i> Start Backup';
+            actionBtn.setAttribute('onclick', 'confirmBackup()');
             
             // Show modal
             const modal = new bootstrap.Modal(document.getElementById('emailModal'));
@@ -307,15 +318,16 @@
             const modal = bootstrap.Modal.getInstance(document.getElementById('emailModal'));
             modal.hide();
             
-            // Show operation status
-            const resultDiv = document.getElementById('operation-result');
-            resultDiv.innerHTML = `
-                <div class="alert alert-info">
-                    <i class="bi bi-clock"></i> 
-                    <strong>Starting backup for ${selectedDatabase}...</strong><br>
-                    <small>Download link will be sent to: ${selectedEmail}</small>
-                </div>
+            // Show loading message
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-info alert-dismissible fade show position-fixed';
+            alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 1051; max-width: 400px;';
+            alertDiv.innerHTML = `
+                <i class="bi bi-clock"></i> Starting backup for ${selectedDatabase}...
+                <br><small>Download link will be sent to: ${selectedEmail}</small>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             `;
+            document.body.appendChild(alertDiv);
             
             // Trigger backup via API
             fetch('/api/backup/trigger', {
@@ -330,14 +342,24 @@
             })
             .then(response => response.json())
             .then(data => {
-                let alertClass = data.success ? 'alert-success' : 'alert-danger';
+                alertDiv.remove();
+                
+                const resultDiv = document.createElement('div');
+                resultDiv.className = `alert alert-${data.success ? 'success' : 'danger'} alert-dismissible fade show position-fixed`;
+                resultDiv.style.cssText = 'top: 20px; right: 20px; z-index: 1051; max-width: 400px;';
                 resultDiv.innerHTML = `
-                    <div class="${alertClass}">
-                        <i class="bi bi-${data.success ? 'check-circle' : 'exclamation-triangle'}"></i> 
-                        ${data.message}
-                        ${data.job_id ? `<br><small>Job ID: ${data.job_id}</small>` : ''}
-                    </div>
+                    <i class="bi bi-${data.success ? 'check-circle' : 'exclamation-triangle'}"></i> 
+                    ${data.message || (data.success ? 'Backup started successfully' : 'Failed to start backup')}
+                    ${data.job_id ? `<br><small>Job ID: ${data.job_id}</small>` : ''}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 `;
+                document.body.appendChild(resultDiv);
+                
+                setTimeout(() => {
+                    if (resultDiv.parentNode) {
+                        resultDiv.remove();
+                    }
+                }, 5000);
                 
                 if (data.success) {
                     // Refresh backup jobs to show new job
@@ -347,12 +369,138 @@
                 }
             })
             .catch(error => {
-                resultDiv.innerHTML = `
-                    <div class="alert alert-danger">
-                        <i class="bi bi-exclamation-triangle"></i> 
-                        Backup request failed: ${error.message}
+                alertDiv.remove();
+                console.error('Error:', error);
+                
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'alert alert-danger alert-dismissible fade show position-fixed';
+                errorDiv.style.cssText = 'top: 20px; right: 20px; z-index: 1051; max-width: 400px;';
+                errorDiv.innerHTML = `
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    Backup request failed: ${error.message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                `;
+                document.body.appendChild(errorDiv);
+                
+                setTimeout(() => {
+                    if (errorDiv.parentNode) {
+                        errorDiv.remove();
+                    }
+                }, 5000);
+            });
+        }
+
+        // Share backup functionality
+        function shareBackup(jobId) {
+            selectedJobId = jobId;
+            
+            // Update modal for sharing
+            document.getElementById('emailModalLabel').innerHTML = '<i class="bi bi-share"></i> Share Backup';
+            document.getElementById('modal-description').textContent = 'Select who to share this backup with:';
+            document.getElementById('selected-database').textContent = '';
+            
+            // Clear and populate email options
+            const emailOptions = document.getElementById('email-options');
+            emailOptions.innerHTML = '';
+            
+            Object.entries(trustedEmailsData).forEach(([email, name]) => {
+                const radioHtml = `
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="emailOption" 
+                               value="${email}" id="share_email_${email.replace(/[@.]/g, '_')}">
+                        <label class="form-check-label" for="share_email_${email.replace(/[@.]/g, '_')}">
+                            <strong>${name}</strong><br>
+                            <small class="text-muted">${email}</small>
+                        </label>
                     </div>
                 `;
+                emailOptions.innerHTML += radioHtml;
+            });
+            
+            // Update action button
+            const actionBtn = document.getElementById('modal-action-btn');
+            actionBtn.innerHTML = '<i class="bi bi-share"></i> Share Backup';
+            actionBtn.setAttribute('onclick', 'confirmShare()');
+            
+            // Show modal
+            const modal = new bootstrap.Modal(document.getElementById('emailModal'));
+            modal.show();
+        }
+        
+        function confirmShare() {
+            const selectedEmailRadio = document.querySelector('input[name="emailOption"]:checked');
+            if (!selectedEmailRadio) {
+                alert('Please select an email address');
+                return;
+            }
+            
+            const email = selectedEmailRadio.value;
+            const name = trustedEmailsData[email];
+            
+            // Close modal
+            bootstrap.Modal.getInstance(document.getElementById('emailModal')).hide();
+            
+            // Show loading message
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-info alert-dismissible fade show position-fixed';
+            alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 1051; max-width: 400px;';
+            alertDiv.innerHTML = `
+                Sharing backup with ${name}...
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            document.body.appendChild(alertDiv);
+            
+            // Create form data
+            const formData = new FormData();
+            formData.append('email', email);
+            
+            // Send share request
+            fetch(`/api/backup/jobs/${selectedJobId}/share`, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                alertDiv.remove();
+                
+                const resultDiv = document.createElement('div');
+                resultDiv.className = `alert alert-${data.success ? 'success' : 'danger'} alert-dismissible fade show position-fixed`;
+                resultDiv.style.cssText = 'top: 20px; right: 20px; z-index: 1051; max-width: 400px;';
+                resultDiv.innerHTML = `
+                    ${data.message || (data.success ? 'Backup shared successfully' : 'Failed to share backup')}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                `;
+                document.body.appendChild(resultDiv);
+                
+                setTimeout(() => {
+                    if (resultDiv.parentNode) {
+                        resultDiv.remove();
+                    }
+                }, 5000);
+                
+                // Refresh backup jobs table
+                if (data.success) {
+                    htmx.trigger('#backup-jobs', 'refresh');
+                }
+            })
+            .catch(error => {
+                alertDiv.remove();
+                console.error('Error:', error);
+                
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'alert alert-danger alert-dismissible fade show position-fixed';
+                errorDiv.style.cssText = 'top: 20px; right: 20px; z-index: 1051; max-width: 400px;';
+                errorDiv.innerHTML = `
+                    Failed to share backup. Please try again.
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                `;
+                document.body.appendChild(errorDiv);
+                
+                setTimeout(() => {
+                    if (errorDiv.parentNode) {
+                        errorDiv.remove();
+                    }
+                }, 5000);
             });
         }
 
@@ -404,6 +552,109 @@
         }
 
         // Theme management
+        
+        // View share history function
+        function viewShareHistory(jobId) {
+            fetch(`/api/backup/jobs/${jobId}/history`)
+                .then(response => response.json())
+                .then(data => {
+                    let historyHtml = `
+                        <div class="mb-3">
+                            <h6><i class="bi bi-person"></i> Original Backup</h6>
+                            <div class="card bg-light">
+                                <div class="card-body py-2">
+                                    <strong>${data.original_name}</strong><br>
+                                    <small class="text-muted">${data.original_email}</small><br>
+                                    <small class="text-muted">Created: ${new Date(data.created).toLocaleDateString('en-GB', {day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit'})}</small>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    if (data.shared_with && data.shared_with.length > 0) {
+                        historyHtml += `
+                            <div>
+                                <h6><i class="bi bi-share"></i> Share History (${data.shared_with.length} shares)</h6>
+                                <div class="list-group list-group-flush">
+                        `;
+                        
+                        data.shared_with.forEach(share => {
+                            historyHtml += `
+                                <div class="list-group-item d-flex justify-content-between align-items-start">
+                                    <div>
+                                        <strong>${share.name}</strong><br>
+                                        <small class="text-muted">${share.email}</small>
+                                    </div>
+                                    <div class="text-end">
+                                        <small class="text-muted">${new Date(share.shared_at).toLocaleDateString('en-GB', {day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit'})}</small>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        
+                        historyHtml += '</div></div>';
+                    } else {
+                        historyHtml += `
+                            <div class="text-center text-muted py-3">
+                                <i class="bi bi-inbox"></i>
+                                <p class="mb-0 mt-2">This backup has not been shared yet</p>
+                            </div>
+                        `;
+                    }
+                    
+                    // Create and show modal
+                    const historyModal = document.createElement('div');
+                    historyModal.className = 'modal fade';
+                    historyModal.id = 'shareHistoryModal';
+                    historyModal.innerHTML = `
+                        <div class="modal-dialog">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title">
+                                        <i class="bi bi-clock-history"></i> Share History: ${data.database}
+                                    </h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body">
+                                    ${historyHtml}
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    document.body.appendChild(historyModal);
+                    const modal = new bootstrap.Modal(historyModal);
+                    modal.show();
+                    
+                    // Remove modal from DOM when hidden
+                    historyModal.addEventListener('hidden.bs.modal', () => {
+                        historyModal.remove();
+                    });
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    
+                    // Show error in a proper alert notification instead of ugly alert()
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'alert alert-danger alert-dismissible fade show position-fixed';
+                    errorDiv.style.cssText = 'top: 20px; right: 20px; z-index: 1051; max-width: 400px;';
+                    errorDiv.innerHTML = `
+                        <i class="bi bi-exclamation-triangle"></i> Failed to load share history
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    `;
+                    document.body.appendChild(errorDiv);
+                    
+                    setTimeout(() => {
+                        if (errorDiv.parentNode) {
+                            errorDiv.remove();
+                        }
+                    }, 5000);
+                });
+        }
+        
         function toggleTheme() {
             const body = document.body;
             const themeIcon = document.getElementById('theme-icon');

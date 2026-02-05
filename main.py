@@ -46,7 +46,8 @@ FULL_ACCESS_LB_IP = get_required_env('FULL_ACCESS_LB_IP')
 BACKUP_ONLY_LB_IP = get_required_env('BACKUP_ONLY_LB_IP')
 
 # Deployment Server
-DEPLOYMENT_SERVER_IP = get_required_env('DEPLOYMENT_SERVER_IP')
+MS_SERVER_IP = get_required_env('MS_SERVER_IP')
+CP_SERVER_IP = get_required_env('CP_SERVER_IP')
 
 # Domain Configuration
 MAIN_DOMAIN = get_required_env('MAIN_DOMAIN')
@@ -803,7 +804,7 @@ def get_last_discovery_time() -> str:
     """Get formatted last discovery time"""
     if DATABASE_CACHE["last_updated"]:
         dt = datetime.fromtimestamp(DATABASE_CACHE["last_updated"])
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%d/%m/%y %H:%M:%S")
     return "Never"
 
 def discover_databases() -> List[str]:
@@ -1520,7 +1521,7 @@ async def get_migrations():
                     # Parse datetime
                     try:
                         dt = datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
-                        formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        formatted_time = dt.strftime("%d/%m/%y %H:%M:%S")
                     except:
                         formatted_time = f"{date_str} {time_str}"
                     
@@ -1701,7 +1702,7 @@ async def trigger_deployment(request: Request):
             }
         
         try:
-            cmd = f'ssh -o StrictHostKeyChecking=no {SSH_USERNAME}@{DEPLOYMENT_SERVER_IP} "/home/experio/workspace/Watcher/auto-deploy/check-and-deploy.sh"'
+            cmd = f'ssh -o StrictHostKeyChecking=no {SSH_USERNAME}@{MS_SERVER_IP} "/home/experio/workspace/Watcher/auto-deploy/check-and-deploy.sh"'
             
             # Execute command with real-time output capture
             process = subprocess.Popen(
@@ -2035,6 +2036,169 @@ async def get_trusted_emails():
     """Get trusted email addresses with names"""
     return {"trusted_emails": TRUSTED_EMAILS_DICT}
 
+@app.post("/api/backup/jobs/{job_id}/share")
+async def share_backup_job(job_id: str, request: Request):
+    """Share an existing backup with another user"""
+    try:
+        # Import required modules at the top
+        import asyncio
+        import sys
+        import os
+        
+        form_data = await request.form()
+        recipient_email = form_data.get("email")
+        
+        if not recipient_email or recipient_email not in TRUSTED_EMAILS:
+            raise HTTPException(status_code=400, detail="Invalid email address")
+        
+        # Load jobs to find the target backup
+        jobs = load_backup_jobs()
+        job_to_share = None
+        
+        for job in jobs:
+            if job["id"] == job_id and job.get("status") == "completed":
+                job_to_share = job
+                break
+        
+        if not job_to_share or not job_to_share.get("download_token"):
+            raise HTTPException(status_code=404, detail="Backup not found or not ready")
+        
+        # Get the original file path from token
+        original_token_data = load_token_data(job_to_share["download_token"])
+        if not original_token_data or not original_token_data.get("file_path"):
+            raise HTTPException(status_code=400, detail="Original backup file not accessible")
+        
+        file_path = original_token_data["file_path"]
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=400, detail="Backup file no longer exists")
+        
+        # Generate new token for sharing
+        new_token = generate_download_token()
+        
+        # Create token data for the share
+        share_token_data = {
+            "database": job_to_share.get("database", "unknown"),
+            "filename": original_token_data.get("filename", "backup.dump"),
+            "file_path": file_path,
+            "shared_from_job": job_id,
+            "shared_to": recipient_email,
+            "created": datetime.now().isoformat()
+        }
+        
+        save_token_data(new_token, share_token_data)
+        
+        # Update job with share history
+        if "shared_with" not in job_to_share:
+            job_to_share["shared_with"] = []
+        
+        # Add share record
+        share_record = {
+            "email": recipient_email,
+            "name": TRUSTED_EMAILS_DICT.get(recipient_email, recipient_email),
+            "shared_at": datetime.now().isoformat(),
+            "token": new_token
+        }
+        job_to_share["shared_with"].append(share_record)
+        
+        save_backup_jobs(jobs)
+        
+        # Send email notification
+        database_name = job_to_share.get("database", "unknown")
+        download_url = f"https://{DOWNLOADS_DOMAIN}/downloads/{new_token}"
+        
+        # Get file size and other job details
+        file_size = job_to_share.get("progress", "Unknown size")
+        if "MB)" in file_size:
+            # Extract size from progress like "Backup completed (123MB)"
+            size_mb = file_size.split("(")[1].split("MB)")[0] if "(" in file_size and "MB)" in file_size else "Unknown"
+        else:
+            size_mb = "Unknown"
+        
+        completed_at = job_to_share.get("updated", "")
+        if completed_at:
+            try:
+                completed_date = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
+                completed_str = completed_date.strftime("%d/%m/%y %H:%M:%S")
+            except:
+                completed_str = completed_at
+        else:
+            completed_str = "Unknown"
+        
+        subject = f"✅ Database Backup Shared - {database_name}"
+        body = f"""
+<h3>Database Backup Shared With You</h3>
+<p><strong>Database:</strong> {database_name}</p>
+<p><strong>Shared by:</strong> {job_to_share.get('email', 'System')}</p>
+<p><strong>File Size:</strong> {size_mb} MB</p>
+<p><strong>Backup Completed:</strong> {completed_str}</p>
+<p><strong>Download Link:</strong> <a href="{download_url}">{download_url}</a></p>
+<br>
+<p><em>Note: This download link will expire in 6 hours.</em></p>
+<p><em>Shared at: {datetime.now().strftime("%d/%m/%y %H:%M:%S")}</em></p>
+        """
+        
+        # Use existing email function
+        scripts_path = os.path.join(os.path.dirname(__file__), 'scripts')
+        if scripts_path not in sys.path:
+            sys.path.append(scripts_path)
+        
+        try:
+            from scripts.backup_manager import backup_manager
+            email_success = await backup_manager.send_email(recipient_email, subject, body)
+            
+            if email_success:
+                return {"success": True, "message": f"Backup shared with {TRUSTED_EMAILS_DICT.get(recipient_email, recipient_email)}"}
+            else:
+                # Remove the token if email failed
+                try:
+                    os.remove(f"{TOKENS_PATH}/{new_token}.json")
+                    # Remove from job history
+                    job_to_share["shared_with"].pop()
+                    save_backup_jobs(jobs)
+                except:
+                    pass
+                raise HTTPException(status_code=500, detail="Failed to send notification email")
+                
+        except ImportError:
+            logger.error("Backup manager not available for email sending")
+            raise HTTPException(status_code=500, detail="Email service not available")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to share backup {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to share backup: {str(e)}")
+
+@app.get("/api/backup/jobs/{job_id}/history")
+async def get_backup_share_history(job_id: str):
+    """Get share history for a backup job"""
+    try:
+        jobs = load_backup_jobs()
+        target_job = None
+        
+        for job in jobs:
+            if job["id"] == job_id:
+                target_job = job
+                break
+        
+        if not target_job:
+            raise HTTPException(status_code=404, detail="Backup job not found")
+        
+        return {
+            "job_id": job_id,
+            "database": target_job.get("database", "Unknown"),
+            "original_email": target_job.get("email", "Unknown"),
+            "original_name": TRUSTED_EMAILS_DICT.get(target_job.get("email", ""), target_job.get("email", "Unknown")),
+            "created": target_job.get("created", ""),
+            "shared_with": target_job.get("shared_with", [])
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get share history for {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get share history: {str(e)}")
+
 @app.get("/api/backup/jobs", response_class=HTMLResponse)
 async def get_backup_jobs():
     """Get backup jobs status as HTML"""
@@ -2086,7 +2250,7 @@ async def get_backup_jobs():
         if created_date:
             try:
                 created_dt = datetime.fromisoformat(created_date.replace('Z', '+00:00'))
-                created_str = created_dt.strftime("%Y-%m-%d %H:%M")
+                created_str = created_dt.strftime("%d/%m/%y %H:%M")
             except:
                 created_str = created_date
         else:
@@ -2107,6 +2271,13 @@ async def get_backup_jobs():
         
         if status == "completed" and job.get("download_token"):
             html += f'<a href="/downloads/{job["download_token"]}" class="btn btn-sm btn-outline-primary me-1" title="Download"><i class="bi bi-download"></i></a>'
+            # Add share button
+            shared_count = len(job.get("shared_with", []))
+            share_text = f" ({shared_count})" if shared_count > 0 else ""
+            html += f'<button class="btn btn-sm btn-outline-success me-1" title="Share backup" onclick="shareBackup(\'{job["id"]}\')"><i class="bi bi-share"></i>{share_text}</button>'
+            # Add history button if there are shares
+            if shared_count > 0:
+                html += f'<button class="btn btn-sm btn-outline-info me-1" title="View share history" onclick="viewShareHistory(\'{job["id"]}\')"><i class="bi bi-clock-history"></i></button>'
         elif status == "running":
             html += '<span class="spinner-border spinner-border-sm me-1" role="status"></span>'
         elif status == "failed":
