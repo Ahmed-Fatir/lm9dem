@@ -320,11 +320,12 @@ exit 1
         os.chmod(script_path, 0o755)
     
     async def cleanup_expired_files(self):
-        """Clean up expired files and tokens"""
+        """Clean up expired files, tokens, and old job entries"""
         try:
             current_time = time.time()
             self.last_cleanup_time = datetime.now()
             cleaned_files = 0
+            cleaned_jobs = 0
             
             # Clean up expired token files
             for token_file in os.listdir(self.tokens_dir):
@@ -354,13 +355,77 @@ exit 1
                     except (ValueError, IndexError):
                         continue
             
-            if cleaned_files > 0:
-                logger.info(f"Cleanup completed: removed {cleaned_files} expired files")
+            # Clean up old job entries (remove jobs older than 6 hours)
+            cleaned_jobs = self.cleanup_old_jobs(current_time)
+            
+            total_cleaned = cleaned_files + cleaned_jobs
+            if total_cleaned > 0:
+                logger.info(f"Cleanup completed: removed {cleaned_files} expired files and {cleaned_jobs} old job entries")
             else:
-                logger.debug("Cleanup completed: no expired files found")
+                logger.debug("Cleanup completed: no expired files or old jobs found")
         
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")
+            
+    def cleanup_old_jobs(self, current_time: float) -> int:
+        """Clean up old job entries from jobs.json (older than 6 hours)"""
+        try:
+            jobs = self.load_backup_jobs()
+            if not jobs:
+                return 0
+                
+            original_count = len(jobs)
+            six_hours_ago = current_time - (6 * 3600)  # 6 hours in seconds
+            
+            # Filter out jobs older than 6 hours
+            # Check both main download_token and shared_with tokens
+            active_jobs = []
+            for job in jobs:
+                job_expired = True
+                
+                # Check main download token
+                main_token = job.get("download_token", "")
+                if main_token and "_" in main_token:
+                    try:
+                        _, expiry_str = main_token.split('_')
+                        main_expiry = int(expiry_str)
+                        if main_expiry > current_time:
+                            job_expired = False
+                    except (ValueError, IndexError):
+                        pass
+                
+                # Check shared tokens if main token is expired
+                if job_expired:
+                    shared_with = job.get("shared_with", [])
+                    for share in shared_with:
+                        share_token = share.get("token", "")
+                        if share_token and "_" in share_token:
+                            try:
+                                _, expiry_str = share_token.split('_')
+                                share_expiry = int(expiry_str)
+                                if share_expiry > current_time:
+                                    job_expired = False
+                                    break
+                            except (ValueError, IndexError):
+                                continue
+                
+                # Keep job if any of its tokens are still valid
+                if not job_expired:
+                    active_jobs.append(job)
+                else:
+                    logger.info(f"Removing expired job: {job['id']} (database: {job.get('database', 'unknown')})")
+            
+            # Save updated jobs list
+            if len(active_jobs) < original_count:
+                self.save_backup_jobs(active_jobs)
+                cleaned_count = original_count - len(active_jobs)
+                logger.info(f"Job cleanup: removed {cleaned_count} old job entries")
+                return cleaned_count
+            
+            return 0
+        except Exception as e:
+            logger.error(f"Job cleanup failed: {e}")
+            return 0
             
     def get_cleanup_status(self):
         """Get cleanup scheduler status"""
