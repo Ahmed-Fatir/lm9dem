@@ -129,10 +129,15 @@ async def security_middleware(request: Request, call_next):
     path = request.url.path
     client_ip = request.client.host
     
-    # Allow health checks from internal IPs (Kubernetes probes) - no logging
+    # Allow health checks only from internal IPs (Kubernetes probes) - no logging
     if path == "/health":
-        response = await call_next(request)
-        return response
+        # Only allow health checks from internal/kubernetes IPs
+        if is_internal_ip(client_ip):
+            response = await call_next(request)
+            return response
+        else:
+            # External health check attempts should be blocked based on host rules below
+            pass
     
     # Access Level 1: {FULL_ACCESS_LB_IP} - Full access to everything (minimal logging)
     if host == FULL_ACCESS_LB_IP:
@@ -151,7 +156,8 @@ async def security_middleware(request: Request, call_next):
         
         if (path.startswith("/backup") or 
             path.startswith("/api/backup") or 
-            path.startswith("/api/databases") or 
+            path == "/api/databases/versions" or  # Read-only: database table data
+            path == "/api/databases/distribution" or  # Read-only: database distribution
             path.startswith("/static/") or 
             path == "/health"):
             # Only log page loads, not API polling
@@ -160,8 +166,17 @@ async def security_middleware(request: Request, call_next):
             # Allow backup dashboard and required API endpoints
             pass
         else:
-            logger.warning(f"Backup LoadBalancer - blocked path: {path}, ip={client_ip}")
-            return Response("Access restricted to backup functionality only", status_code=403, media_type="text/plain")
+            # Special handling for download attempts from backup LoadBalancer
+            if path.startswith("/downloads/"):
+                logger.warning(f"Backup LoadBalancer - download attempt blocked: {path}, ip={client_ip}")
+                return Response(
+                    "Downloads must be accessed via the downloads portal. Please use the external download links provided.", 
+                    status_code=403, 
+                    media_type="text/plain"
+                )
+            else:
+                logger.warning(f"Backup LoadBalancer - blocked path: {path}, ip={client_ip}")
+                return Response("Access restricted to backup functionality only", status_code=403, media_type="text/plain")
     
     # Access Level 3: {DOWNLOADS_DOMAIN} - Only download access
     elif host == DOWNLOADS_DOMAIN:
@@ -177,7 +192,7 @@ async def security_middleware(request: Request, call_next):
                 logger.warning(f"Downloads domain - invalid token format: {token[:20]}..., ip={client_ip}")
                 return Response("Invalid download link", status_code=404, media_type="text/plain")
         else:
-            # Block any other path on downloads domain
+            # Block any other path on downloads domain (including /health)
             logger.warning(f"Downloads domain - blocked path: {path}, ip={client_ip}")
             return Response("Not found", status_code=404, media_type="text/plain")
     
@@ -2223,9 +2238,27 @@ async def get_backup_share_history(job_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to get share history: {str(e)}")
 
 @app.get("/api/backup/jobs", response_class=HTMLResponse)
-async def get_backup_jobs():
+async def get_backup_jobs(request: Request):
     """Get backup jobs status as HTML"""
     jobs = load_backup_jobs()
+    
+    # Determine download URL base based on access level
+    host = request.headers.get("host", "")
+    client_ip = request.client.host
+    
+    # Generate proper download URLs based on access level
+    if host == BACKUP_ONLY_LB_IP:
+        # For backup LoadBalancer users, provide external download domain URLs
+        download_base = f"https://{DOWNLOADS_DOMAIN}/downloads/"
+        show_external_warning = True
+    elif host == DOWNLOADS_DOMAIN:
+        # For downloads domain, use relative URLs
+        download_base = "/downloads/"
+        show_external_warning = False
+    else:
+        # For full access LoadBalancer, use relative URLs
+        download_base = "/downloads/"
+        show_external_warning = False
     
     if not jobs:
         return HTMLResponse("""
@@ -2293,7 +2326,10 @@ async def get_backup_jobs():
         '''
         
         if status == "completed" and job.get("download_token"):
-            html += f'<a href="/downloads/{job["download_token"]}" class="btn btn-sm btn-outline-primary me-1" title="Download"><i class="bi bi-download"></i></a>'
+            # Use proper download URL based on access level
+            download_url = f"{download_base}{job['download_token']}"
+            target_attr = 'target="_blank"' if show_external_warning else ''
+            html += f'<a href="{download_url}" {target_attr} class="btn btn-sm btn-outline-primary me-1" title="Download"><i class="bi bi-download"></i></a>'
             # Add share button
             shared_count = len(job.get("shared_with", []))
             share_text = f" ({shared_count})" if shared_count > 0 else ""
