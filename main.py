@@ -1720,6 +1720,43 @@ async def get_deployment_status():
         logger.error(f"Error getting deployment status: {e}")
         return {"active": False, "error": str(e)}
 
+@app.post("/api/deployment/clear")
+async def clear_stuck_deployment():
+    """Clear stuck deployment status"""
+    try:
+        # Get current deployment status
+        current_status = redis_helper.get_deployment_status()
+        
+        if current_status.get("active"):
+            # Clear deployment lock
+            redis_helper.redis_client.delete("deployment:active")
+            redis_helper.redis_client.delete("deployment:result")
+            
+            user = current_status.get("user", "unknown")
+            started_at = current_status.get("started_at", "unknown")
+            
+            logger.info(f"Cleared stuck deployment: user={user}, started_at={started_at}")
+            
+            return {
+                "success": True,
+                "message": f"✅ Cleared stuck deployment (was running since {started_at} by {user})",
+                "alert_class": "alert-success"
+            }
+        else:
+            return {
+                "success": True,
+                "message": "ℹ️ No stuck deployment found - system is ready",
+                "alert_class": "alert-info"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error clearing deployment: {e}")
+        return {
+            "success": False,
+            "message": f"❌ Error clearing deployment: {str(e)}",
+            "alert_class": "alert-danger"
+        }
+
 @app.post("/api/deployment/trigger")
 async def trigger_deployment(request: Request):
     """Trigger auto-deployment with concurrency control"""

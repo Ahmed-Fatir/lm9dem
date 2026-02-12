@@ -194,6 +194,12 @@
                                     hx-target="#operation-result">
                                 <i class="bi bi-unlock"></i> Unlock Migration
                             </button>
+                            <button class="btn btn-danger" 
+                                    hx-post="/api/deployment/clear" 
+                                    hx-confirm="Clear stuck deployment status?"
+                                    hx-target="#operation-result">
+                                <i class="bi bi-x-circle"></i> Clear Stuck Deploy
+                            </button>
                         </div>
                     </div>
                 </div>
