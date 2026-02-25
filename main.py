@@ -1452,7 +1452,7 @@ async def unlock_migration():
 
 @app.post("/api/databases/discover-companies")
 async def discover_companies():
-    """Trigger company name discovery for all databases"""
+    """Discover company names from cabinet_global database"""
     try:
         import subprocess
         import os
@@ -1469,13 +1469,13 @@ async def discover_companies():
                 "message": error_msg
             }
         
-        logger.info("Starting company name discovery...")
+        logger.info("Starting company name discovery from cabinet_global...")
         
-        # Run the discovery script
+        # Run the discovery script (single query, should be fast)
         result = subprocess.run([script_path], 
                               capture_output=True, 
                               text=True, 
-                              timeout=300)  # 5 minute timeout
+                              timeout=60)  # 1 minute timeout (single query)
         
         if result.returncode != 0:
             error_msg = f"Company discovery failed: {result.stderr}"
@@ -1494,8 +1494,13 @@ async def discover_companies():
             if ':' in line and not line.startswith('['):  # Skip log lines
                 try:
                     database, company_name = line.split(':', 1)
-                    redis_helper.set_company_name(database, company_name)
-                    success_count += 1
+                    database = database.strip()
+                    company_name = company_name.strip()
+                    if database:
+                        if not company_name:
+                            company_name = "Unknown"
+                        redis_helper.set_company_name(database, company_name)
+                        success_count += 1
                 except ValueError:
                     continue  # Skip malformed lines
         
@@ -1503,11 +1508,11 @@ async def discover_companies():
         databases = discover_databases()
         stale_count = redis_helper.cleanup_stale_company_names(databases)
         
-        logger.info(f"Company discovery completed: {success_count} companies stored")
+        logger.info(f"Company discovery completed: {success_count} companies stored from cabinet_global")
         
         return {
             "success": True,
-            "message": f"✅ Discovered {success_count} company names",
+            "message": f"✅ Discovered {success_count} company names from cabinet_global",
             "companies_found": success_count,
             "stale_cleaned": stale_count
         }
@@ -1515,7 +1520,7 @@ async def discover_companies():
     except subprocess.TimeoutExpired:
         return {
             "success": False,
-            "message": "❌ Company discovery timed out (5 minutes)",
+            "message": "❌ Company discovery timed out (1 minute)",
             "error": "Timeout"
         }
     except Exception as e:
@@ -2076,7 +2081,8 @@ async def trigger_backup(request: Request):
         try:
             from scripts.backup_manager import backup_manager
             # Start backup in background
-            asyncio.create_task(backup_manager.execute_backup(job_id, database, email))
+            company_name = redis_helper.get_company_name(database)
+            asyncio.create_task(backup_manager.execute_backup(job_id, database, email, company_name))
         except ImportError as e:
             logger.error(f"Failed to import backup_manager: {e}")
             # Update job status to failed

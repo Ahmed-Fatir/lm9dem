@@ -29,7 +29,7 @@ data:
   
   # Script Paths
   BACKUP_SCRIPT_PATH: "/home/experio/system-ns/scripts/backup-one-db.sh"
-  DISCOVERY_SCRIPT_PATH: "/home/experio/system-ns/lm9dem/scripts/discover_companies_direct.sh"
+  DISCOVERY_SCRIPT_PATH: "/app/scripts/discover_companies_direct.sh"
   
   # Script Configuration
   NAMESPACE: "system-experio"

@@ -171,7 +171,7 @@ class BackupManager:
             logger.error(f"Failed to send email: {e}")
             return False
     
-    async def execute_backup(self, job_id: str, database: str, user_email: str):
+    async def execute_backup(self, job_id: str, database: str, user_email: str, company_name: str = "Unknown"):
         """Execute the actual backup process"""
         try:
             self.update_job_status(job_id, "running", "Starting backup process...")
@@ -266,6 +266,7 @@ class BackupManager:
             body = f"""
 <h3>Database Backup Completed Successfully</h3>
 <p><strong>Database:</strong> {database}</p>
+<p><strong>Company:</strong> {company_name}</p>
 <p><strong>File Size:</strong> {file_size // (1024*1024)} MB</p>
 <p><strong>Download Link:</strong> <a href="{download_url}">{download_url}</a></p>
 <br>
@@ -287,6 +288,7 @@ class BackupManager:
             body = f"""
 <h3>Database Backup Failed</h3>
 <p><strong>Database:</strong> {database}</p>
+<p><strong>Company:</strong> {company_name}</p>
 <p><strong>User Email:</strong> {user_email}</p>
 <p><strong>Job ID:</strong> {job_id}</p>
 <p><strong>Error:</strong> {str(e)}</p>
